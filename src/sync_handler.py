@@ -59,7 +59,7 @@ def fetch_main_data(conn, start_date=None, end_date=None):
         all_results.extend([{'Id': row[0], 'Type': row[1]} for row in cursor.fetchall()])
         return all_results
 
-def fetch_goods_data(orderid):
+def fetch_goods_data(orderid, salename):
     """独立方法：连接mall库并查商品信息"""
     if not orderid:
         return []
@@ -75,10 +75,11 @@ def fetch_goods_data(orderid):
     try:
         with mall_conn.cursor() as mall_cursor:
             goods_sql = """
-            SELECT a.OrderPrice,c.MainPartId,c.MainPartName
+            SELECT b.GoodsPrice,c.MainPartId,c.MainPartName
             FROM tb_orderinfo a
             JOIN tb_orderitem b
               ON b.OrderId=a.Id
+              AND b.SaleName=%s
               AND b.Deleted=0
             JOIN tb_orderitemdetail c
               ON c.ItemId=b.Id
@@ -86,7 +87,7 @@ def fetch_goods_data(orderid):
             WHERE a.Deleted=0
               AND a.Id=%s;
             """
-            mall_cursor.execute(goods_sql, (orderid,))
+            mall_cursor.execute(goods_sql, (salename, orderid))
             goods_list = [dict(zip([col[0] for col in mall_cursor.description], g)) for g in mall_cursor.fetchall()]
     finally:
         mall_conn.close()
@@ -142,7 +143,8 @@ def fetch_detail_data(conn, main_data_list):
                 if row:
                     row_dict = dict(zip([col[0] for col in cursor.description], row))
                     mall_orderid = row_dict.get('OrderId')
-                    row_dict['Goods'] = fetch_goods_data(mall_orderid)
+                    mall_salenname = row_dict.get('ServiceSaleName')
+                    row_dict['GoodsInfo'] = fetch_goods_data(mall_orderid, mall_salenname)
                     results.append(row_dict)
             elif main_type == 2:
                 sql = """
@@ -158,7 +160,7 @@ def fetch_detail_data(conn, main_data_list):
                 CASE d.ServiceType WHEN 4 THEN '常规安装' WHEN 5 THEN '上门安装' WHEN 6 THEN '集中安装' WHEN 7 THEN '道路救援' END AS ServiceTypeName,
                 g.VinNumber,f.`Value` AS TruckVin,d.ServiceCode,d.ServiceName,GetAscriptionByLoginName(d.ServiceCode,1) AS ServiceAscription,
                 fn_GetRecordCodeById(a.WorkOrderId) AS RecordCode,fn_GetRecordNameById(a.WorkOrderId) AS RecordName,GetAscriptionByLoginName(fn_GetRecordCodeById(a.WorkOrderId),1) AS RecordAscription,
-                d.Remark AS ServiceRemark,fn_GetDispatchRemarkById(a.WorkOrderId) AS DispatchRemark,1 AS IsChange,a.Remark AS ChangeRemark
+                d.Remark AS ServiceRemark,fn_GetDispatchRemarkById(a.WorkOrderId) AS DispatchRemark,1 AS IsChange,a.Reason AS ChangeRemark
                 FROM tb_workpriceedit_log a
                 JOIN tb_workorderinfo b
                   ON a.WorkOrderId=b.Id
@@ -184,7 +186,8 @@ def fetch_detail_data(conn, main_data_list):
                 if row:
                     row_dict = dict(zip([col[0] for col in cursor.description], row))
                     mall_orderid = row_dict.get('OrderId')
-                    row_dict['Goods'] = fetch_goods_data(mall_orderid)
+                    mall_salenname = row_dict.get('ServiceSaleName')
+                    row_dict['GoodsInfo'] = fetch_goods_data(mall_orderid, mall_salenname)
                     results.append(row_dict)
     return results
 
@@ -206,8 +209,20 @@ def insert_to_target(conn, data):
     columns = ','.join(f'`{k}`' for k in keys)
     sql = f"INSERT INTO tm_order_costinfo ({columns}) VALUES ({placeholders})"
     values = []
+    import json
+    from decimal import Decimal
+    def default_json(obj):
+        if isinstance(obj, Decimal):
+            return str(obj)
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
     for item in data:
-        values.append(tuple(item.get(k) for k in keys))
+        row = []
+        for k in keys:
+            v = item.get(k)
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v, ensure_ascii=False, default=default_json)
+            row.append(v)
+        values.append(tuple(row))
     with conn.cursor() as cursor:
         cursor.executemany(sql, values)
     conn.commit()
