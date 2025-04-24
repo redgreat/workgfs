@@ -28,4 +28,4 @@ jobs:
           context: .
           push: true
           tags: |
-            registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/manualrepl:${{ github.ref_name }}
+            registry.cn-hangzhou.aliyuncs.com/${{ secrets.ALIYUN_NAMESPACE }}/${{ secrets.DOCKER_IMAGE_NAME }}:${{ github.ref_name }}
