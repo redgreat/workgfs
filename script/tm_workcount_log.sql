@@ -1,9 +1,11 @@
-CREATE TABLE `tm_workcount_log` (
+DROP TABLE IF EXISTS finance_basic.workcount_log;
+CREATE TABLE finance_basic.workcount_log (
+  `Id` CHAR(12) PRIMARY KEY COMMENT '成本单Id',
   `WorkOrderId` varchar(50) COMMENT '工单ID',
   `AppCode` varchar(50) COMMENT '工单申请编码',
   `OrderId` CHAR(12) COMMENT '订单ID',
   `OrderNo` CHAR(12) COMMENT '订单编号',
-  `OrderType` varchar(50) COMMENT '成本单类型',
+  `OrderType` varchar(50) COMMENT '成本单类型(1基础计价+补贴费用2成本调价)',
   `WorkOrderType` varchar(50) COMMENT '工单类型',
   `WorkStatus` varchar(50) COMMENT '工单状态',
   `ProName` varchar(50) COMMENT '省份名称',
@@ -21,6 +23,8 @@ CREATE TABLE `tm_workcount_log` (
   `SubjectClassCode` varchar(50) COMMENT '科目分类',
   `ServiceSubjectCode` varchar(50) COMMENT '服务科目编号',
   `InternalPrice` decimal(10,2) COMMENT '内部结算价格',
+  `CostRemark` varchar(1000) COMMENT '成本用途',
+  `CostReason` varchar(1000) COMMENT '成本原因',
   `Privoder` varchar(2) COMMENT '施工团队',
   `IsCentralize` varchar(3) COMMENT '施工方式',
   `VinNumber` varchar(50) COMMENT '车架号',
@@ -36,5 +40,6 @@ CREATE TABLE `tm_workcount_log` (
   `ActualRecordPersonAscription` varchar(50) COMMENT '录单人归属',
   `SendRemark` varchar(500) COMMENT '派单备注',
   `ServiceRemark` varchar(1000) COMMENT '施工备注',
-  `TagSign` varchar(1) COMMENT '按单调价'
+  `TagSign` varchar(1) COMMENT '按单调价',
+  `ChangeRemark` varchar(1000) COMMENT '按单调价备注'
 ) ENGINE=InnoDB COMMENT '壹好车服成本单据临时数据';
