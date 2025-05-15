@@ -84,7 +84,7 @@ def fetch_goods_data(orderid, salename):
     try:
         with mall_conn.cursor() as mall_cursor:
             goods_sql = """
-            SELECT b.GoodsPrice,c.MainPartName
+            SELECT b.GoodsPrice,c.MainPartId,c.MainPartName
             FROM tb_orderinfo a
             JOIN tb_orderitem b
               ON b.OrderId=a.Id
@@ -114,6 +114,7 @@ def fetch_detail_data(conn, main_data_list):
                 sql = """
                 SELECT a.Id,
                 a.WorkOrderId,
+                CONCAT(a.AppCode,'-CT-',RIGHT(a.WorkOrderId,10)) AS CostNo,
                 a.AppCode,
                 (SELECT MallOrderId FROM tb_workgoodsinfo b WHERE b.WorkOrderId=a.WorkOrderId AND b.GoodsType IN (5,10,11,18) AND b.Deleted=0 LIMIT 1) AS OrderId,
                 (SELECT OrderNo FROM tb_workgoodsinfo c WHERE c.WorkOrderId=a.WorkOrderId AND c.GoodsType IN (5,10,11,18) AND c.Deleted=0 LIMIT 1) AS OrderNo,
@@ -124,10 +125,14 @@ def fetch_detail_data(conn, main_data_list):
                 a.CityName,
                 a.AreaName,
                 a.InstallAddress,
+                a.CustSettleId,
                 a.CustSettleName,
+                a.CustomerId,
                 a.CustomerName,
+                a.CustStoreId,
                 a.CustStoreName,
                 a.ActualCustStoreName,
+                NULL AS MainPartId,
                 NULL AS MainPartName,
                 a.GeneralGoodsNames,
                 a.ArtificialServicePriceName,
@@ -138,6 +143,8 @@ def fetch_detail_data(conn, main_data_list):
                 a.InternalPrice,
                 a.PricingMethodName AS CostReason,
                 a.PricingMethodName AS CostRemark,
+                a.CompleteTime AS FinishTime,
+                a.CompleteTime AS CostConfirmTime,
                 a.Privoder,
                 a.IsCentralize,
                 a.VinNumber,
@@ -163,15 +170,17 @@ def fetch_detail_data(conn, main_data_list):
                 if row:
                     row_dict = dict(zip([col[0] for col in cursor.description], row))
                     mall_orderid = row_dict.get('OrderId')
-                    mall_salenname = row_dict.get('ServiceSaleName')
+                    mall_salenname = row_dict.get('ArtificialServicePriceName')
                     goods_info = fetch_goods_data(mall_orderid, mall_salenname)
                     row_dict['GoodsInfo'] = goods_info
+                    if goods_info and isinstance(goods_info, list) and len(goods_info) > 0 and 'MainPartId' in goods_info[0]:
+                        row_dict['MainPartId'] = goods_info[0]['MainPartId']
                     if goods_info and isinstance(goods_info, list) and len(goods_info) > 0 and 'MainPartName' in goods_info[0]:
-                            row_dict['MainPartName'] = goods_info[0]['MainPartName']
+                        row_dict['MainPartName'] = goods_info[0]['MainPartName']
                     results.append(row_dict)
             elif main_type == 2:
                 sql = """
-                SELECT a.Id,a.WorkOrderId,
+                SELECT a.Id,CONCAT(a.AppCode,'-CT-',RIGHT(a.WorkOrderId,10)) AS CostNo,a.WorkOrderId,
                 a.AppCode,
                 (SELECT c.MallOrderId FROM tb_workgoodsinfo c WHERE c.WorkOrderId=a.WorkOrderId AND c.GoodsType IN (5,10,11,18) AND c.Deleted=0 LIMIT 1) AS OrderId,
                 (SELECT d.OrderNo FROM tb_workgoodsinfo d WHERE d.WorkOrderId=a.WorkOrderId AND d.GoodsType IN (5,10,11,18) AND d.Deleted=0 LIMIT 1) AS OrderNo,
@@ -186,6 +195,7 @@ def fetch_detail_data(conn, main_data_list):
                 b.CustomerName,
                 b.CustStoreName,
                 b.ActualCustStoreName,
+                NULL AS MainPartId,
                 NULL AS MainPartName,
                 b.GeneralGoodsNames,
                 a.ArtificialServicePriceName,
@@ -196,6 +206,8 @@ def fetch_detail_data(conn, main_data_list):
                 a.InternalPrice-b.InternalPrice AS InternalPrice,
                 b.PricingMethodName AS CostReason,
                 b.PricingMethodName AS CostRemark,
+                a.OperTime AS FinishTime,
+                a.OperTime AS CostConfirmTime,
                 b.Privoder,
                 b.IsCentralize,
                 b.VinNumber,
@@ -229,23 +241,27 @@ def fetch_detail_data(conn, main_data_list):
                 if row:
                     row_dict = dict(zip([col[0] for col in cursor.description], row))
                     mall_orderid = row_dict.get('OrderId')
-                    mall_salenname = row_dict.get('ServiceSaleName')
+                    mall_salenname = row_dict.get('ArtificialServicePriceName')
                     goods_info = fetch_goods_data(mall_orderid, mall_salenname)
                     row_dict['GoodsInfo'] = goods_info
+                    if goods_info and isinstance(goods_info, list) and len(goods_info) > 0 and 'MainPartId' in goods_info[0]:
+                        row_dict['MainPartId'] = goods_info[0]['MainPartId']
                     if goods_info and isinstance(goods_info, list) and len(goods_info) > 0 and 'MainPartName' in goods_info[0]:
-                            row_dict['MainPartName'] = goods_info[0]['MainPartName']
+                        row_dict['MainPartName'] = goods_info[0]['MainPartName']
                     results.append(row_dict)
             elif main_type == 3:
                 sql = """
-                SELECT a.Id,a.TargetId AS WorkOrderId,b.AppCode,
+                SELECT a.Id,CONCAT(b.AppCode,'-CT-',RIGHT(a.TargetId,10)) AS CostNo,a.TargetId AS WorkOrderId,b.AppCode,
                 (SELECT MallOrderId FROM tb_workgoodsinfo h WHERE h.WorkOrderId=b.Id AND h.GoodsType IN (5,10,11,18) AND h.Deleted=0 LIMIT 1) AS OrderId,
                 (SELECT OrderNo FROM tb_workgoodsinfo i WHERE i.WorkOrderId=b.Id AND i.GoodsType IN (5,10,11,18) AND i.Deleted=0 LIMIT 1) AS OrderNo,
                 2 AS OrderType,fn_GetOrderTypeByCode(b.OrderType) AS WorkOrderType,fn_GetStatusNameByCode(a.ApplyWorkStatus) AS WorkStatus,
-                b.ProName,b.CityName,b.AreaName,b.InstallAddress,b.CustSettleName,b.CustomerName,b.CustStoreName,NULL AS ActualCustStoreName,NULL AS MainPartName,
+                b.ProName,b.CityName,b.AreaName,b.InstallAddress,b.CustSettleId,b.CustSettleName,b.CustomerId,b.CustomerName,b.CustStoreId,
+                b.CustStoreName,NULL AS MainPartId, NULL AS MainPartName, NULL AS ActualCustStoreName,
                 (SELECT SaleName FROM tb_workgoodsinfo j WHERE j.WorkOrderId=b.Id AND j.GoodsType = 0 AND j.Deleted=0 LIMIT 1) AS GeneralGoodsNames,
                 (SELECT SaleName FROM tb_workgoodsinfo k WHERE k.WorkOrderId=b.Id AND k.GoodsType IN (5,10,11,18) AND k.Deleted=0 LIMIT 1) AS ArtificialServicePriceName,
                 NULL AS ArtificialServicePrice,c.SubjectNameSummary AS ServiceSubjectName,c.SubjectCodeSummary AS SubjectClassCode,
-                a.ApplyFee AS InternalPrice,l.Remark AS CostRemark,a.ApplyReason AS CostReason,CASE d.Privoder WHEN 0 THEN '中瑞' WHEN 1 THEN '客户' END AS Privoder,
+                a.ApplyFee AS InternalPrice,l.Remark AS CostRemark,a.ApplyReason AS CostReason,a.FeeApplyTime AS FinishTime,a.LastAuditTime AS CostConfirmTime,
+                CASE d.Privoder WHEN 0 THEN '中瑞' WHEN 1 THEN '客户' END AS Privoder,
                 CASE d.ServiceType WHEN 4 THEN '常规安装' WHEN 5 THEN '上门安装' WHEN 6 THEN '集中安装' WHEN 7 THEN '道路救援' END AS IsCentralize,
                 g.VinNumber,f.`Value` AS GuaVin,g.PlateNumber,a.LastAuditTime AS CompleteTime, a.ApplyPersonName AS CreatePersonName,
                 d.ServiceCode,d.ServiceName,GetAscriptionByLoginName(d.ServiceCode,1) AS ServiceAscription,
@@ -280,11 +296,13 @@ def fetch_detail_data(conn, main_data_list):
                 if row:
                     row_dict = dict(zip([col[0] for col in cursor.description], row))
                     mall_orderid = row_dict.get('OrderId')
-                    mall_salenname = row_dict.get('ServiceSaleName')
+                    mall_salenname = row_dict.get('ArtificialServicePriceName')
                     goods_info = fetch_goods_data(mall_orderid, mall_salenname)
                     row_dict['GoodsInfo'] = goods_info
                     # 覆盖 MainPartName
                     if goods_info and isinstance(goods_info, list) and len(goods_info) > 0:
+                        if 'MainPartId' in goods_info[0]:
+                            row_dict['MainPartId'] = goods_info[0]['MainPartId']
                         if 'MainPartName' in goods_info[0]:
                             row_dict['MainPartName'] = goods_info[0]['MainPartName']
                         if 'GoodsPrice' in goods_info[0]:
@@ -296,12 +314,12 @@ def insert_to_target(conn, data):
     if not data:
         return
     # 字段顺序与workcount_log表建表语句一致
-    keys = ['Id', 'WorkOrderId', 'AppCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
-        'ProName', 'CityName', 'AreaName', 'InstallAddress', 'CustSettleName', 'CustomerName',
-        'CustStoreName', 'ActualCustStoreName', 'GeneralGoodsNames', 'ArtificialServicePriceName',
-        'ArtificialServicePrice', 'ServiceSubjectName', 'SubjectClassCode', 'ServiceSubjectCode',
-        'InternalPrice', 'CostRemark', 'CostReason', 'Privoder', 'IsCentralize', 'VinNumber', 'GuaVin', 'PlateNumber',
-        'CompleteTime', 'CreatePersonName', 'ServiceCode', 'ServiceName', 'ServiceAscription',
+    keys = ['Id', 'CostNo', 'WorkOrderId', 'AppCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
+        'ProName', 'CityName', 'AreaName', 'InstallAddress', 'CustSettleId', 'CustSettleName', 'CustomerId', 'CustomerName',
+        'CustStoreId','CustStoreName', 'MainPartId', 'MainPartName', 'ActualCustStoreName', 'GeneralGoodsNames', 
+        'ArtificialServicePriceName', 'ArtificialServicePrice', 'ServiceSubjectName', 'SubjectClassCode', 'ServiceSubjectCode',
+        'InternalPrice', 'CostRemark', 'CostReason', 'FinishTime', 'CostConfirmTime', 'Privoder', 'IsCentralize', 'VinNumber', 
+        'GuaVin', 'PlateNumber', 'CompleteTime', 'CreatePersonName', 'ServiceCode', 'ServiceName', 'ServiceAscription',
         'ActualRecordPersonCode', 'ActualRecordPersonName', 'ActualRecordPersonAscription',
         'SendRemark', 'ServiceRemark', 'TagSign', 'ChangeRemark'
     ]
