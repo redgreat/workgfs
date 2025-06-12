@@ -5,7 +5,12 @@ from sync_handler import sync_task
 import os
 
 def load_config():
-    with open('../config/config.yaml', encoding='utf-8') as f:
+    """
+    加载配置文件
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(os.path.dirname(current_dir), 'config', 'config.yaml')
+    with open(config_path, encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 
