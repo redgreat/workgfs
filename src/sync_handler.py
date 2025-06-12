@@ -164,6 +164,7 @@ def fetch_detail_data(conn, main_data_list):
                 NULL AS ChangeRemark
                 FROM vi_workcount_log a
                 WHERE a.Id = %s
+                LIMIT 1
                 """
                 cursor.execute(sql, (main_id,))
                 row = cursor.fetchone()
