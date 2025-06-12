@@ -32,7 +32,7 @@ def fetch_main_data(conn, start_date=None, end_date=None):
         start_date, end_date = get_last_month_range()
     with conn.cursor() as cursor:
         sql_1 = f"""
-        SELECT Id, 1 AS Type 
+        SELECT DISTINCT Id, 1 AS Type 
         FROM vi_workcount_log
         WHERE CompleteTime>='{start_date}'
           AND CompleteTime<'{end_date}';
