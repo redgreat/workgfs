@@ -1,4 +1,4 @@
-docker exec -d workgfspro bash -c "cd /app && python src/manual_sync.py 2020-11-01 2025-01-01 > logs/manual_sync.log 2>&1"
+docker exec -d workgfspro bash -c "cd /app && python src/manual_sync.py 2025-06-01 2025-07-01 > logs/manual_sync.log 2>&1"
 
 # 查看容器内进程
 docker exec workgfspro ps aux | grep python

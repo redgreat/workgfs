@@ -326,7 +326,7 @@ def insert_to_target(conn, data):
     ]
     placeholders = ','.join(['%s'] * len(keys))
     columns = ','.join(f'`{k}`' for k in keys)
-    sql = f"INSERT INTO workcount_log ({columns}) VALUES ({placeholders})"
+    sql = f"REPLACE INTO workcount_log ({columns}) VALUES ({placeholders})"
     values = []
     from decimal import Decimal
     for item in data:
