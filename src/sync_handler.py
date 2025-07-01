@@ -343,6 +343,9 @@ def insert_to_target(conn, data):
 
 
 def sync_task(start_date=None, end_date=None):
+    """
+    执行数据同步任务，在同步前先清空目标表
+    """
     import os
     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'config.yaml')
     with open(config_path, encoding='utf-8') as f:
@@ -356,6 +359,11 @@ def sync_task(start_date=None, end_date=None):
     start_time = time.time()
     logger.info(f"[SYNC] Start batch data sync task, start_date={start_date}, end_date={end_date}")
     try:
+        with tgt_conn.cursor() as cursor:
+            cursor.execute("TRUNCATE TABLE workcount_log")
+        tgt_conn.commit()
+        logger.info("[SYNC] Target table workcount_log truncated")
+        
         all_main_data = fetch_main_data(src_conn, start_date, end_date)
         logger.info(f"[SYNC] Total main ids to process: {len(all_main_data)}")
         for i in range(0, len(all_main_data), batch_size):
