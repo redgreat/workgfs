@@ -4,7 +4,7 @@ import time
 from loguru import logger
 
 # 同步完成后在 target_db 调用的无参存储过程（写死，不从配置读取）
-POST_COST_SYNC_PROCEDURE = 'proc_InsertCostInfo_ehcf'
+POST_COST_SYNC_PROCEDURE = 'finance_main.proc_InsertCostInfo_ehcf'
 
 
 def get_db_conn(db_config):
@@ -25,7 +25,7 @@ def fetch_next_cost_sync_main(conn):
     """
     sql = """
         SELECT Id
-        FROM main_costsyncinfo
+        FROM finance_main.main_costsyncinfo
         WHERE Deleted = 0
           AND AuditState = 1
           AND CostSyncState = 0
@@ -44,7 +44,7 @@ def fetch_cost_sync_work_order_ids(conn, cost_sync_id):
     """主单下已验证通过的明细工单 Id。"""
     sql = """
         SELECT WorkOrderId
-        FROM main_costsyncdetail
+        FROM finance_main.main_costsyncdetail
         WHERE Deleted = 0
           AND CostSyncId = %s
           AND AuditState = 1
@@ -287,7 +287,7 @@ def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert):
     with tgt_conn.cursor() as cursor:
         cursor.execute(
             """
-            UPDATE main_costsyncinfo
+            UPDATE finance_main.main_costsyncinfo
             SET CostSyncState = 1, UpdatedAt = NOW()
             WHERE Id = %s AND Deleted = 0
             """,
