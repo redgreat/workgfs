@@ -18,10 +18,10 @@ def get_db_conn(db_config):
     )
 
 
-def fetch_next_cost_sync_main(conn):
+def fetch_pending_cost_sync_main_ids(conn):
     """
-    取一条待同步主单：AuditState=1 且 CostSyncState=0，未删除。
-    返回 dict {'Id': ...} 或 None。
+    一次性取出当前待同步主单 Id 列表（任务启动时快照）。
+    条件：AuditState=1 且 CostSyncState=0，未删除。
     """
     sql = """
         SELECT Id
@@ -30,14 +30,11 @@ def fetch_next_cost_sync_main(conn):
           AND AuditState = 1
           AND CostSyncState = 0
         ORDER BY CreatedAt ASC, Id ASC
-        LIMIT 1
     """
     with conn.cursor() as cursor:
         cursor.execute(sql)
-        row = cursor.fetchone()
-    if not row:
-        return None
-    return {'Id': row[0]}
+        rows = cursor.fetchall()
+    return [r[0] for r in rows]
 
 
 def fetch_cost_sync_work_order_ids(conn, cost_sync_id):
@@ -301,7 +298,8 @@ def sync_cost_sync_queue():
     扫描 main_costsyncinfo（AuditState=1, CostSyncState=0），按明细 WorkOrderId
     逐单调用 fetch_detail_data（三张表各最多一条），汇总写入；
     每个主单：目标库单事务内 DELETE workcount_log → REPLACE 写入 → CALL 过程 → 更新主单完成。
-    循环直到无待同步主单（每日定时跑一次即可）。
+    注意：本次任务只处理“启动时快照”的主单集合，避免跳过记录造成循环内重复命中。
+    每日定时跑一次，下次任务再重新扫描未同步主单。
     """
     import os
     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'conf', 'config.yaml')
@@ -316,11 +314,9 @@ def sync_cost_sync_queue():
     logger.info('[SYNC][COST] Start main_costsyncinfo queue sync')
     try:
         processed = 0
-        while True:
-            main = fetch_next_cost_sync_main(tgt_conn)
-            if not main:
-                break
-            cost_sync_id = main['Id']
+        pending_main_ids = fetch_pending_cost_sync_main_ids(tgt_conn)
+        logger.info(f'[SYNC][COST] Snapshot pending mains: {len(pending_main_ids)}')
+        for cost_sync_id in pending_main_ids:
             work_order_ids = fetch_cost_sync_work_order_ids(tgt_conn, cost_sync_id)
             logger.info(
                 f'[SYNC][COST] Main Id={cost_sync_id}, work orders count={len(work_order_ids)}'
