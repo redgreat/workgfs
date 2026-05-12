@@ -9,7 +9,7 @@ def load_config():
     加载配置文件
     """
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(os.path.dirname(current_dir), 'config', 'config.yaml')
+    config_path = os.path.join(os.path.dirname(current_dir), 'conf', 'config.yaml')
     with open(config_path, encoding='utf-8') as f:
         return yaml.safe_load(f)
 

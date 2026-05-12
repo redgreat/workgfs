@@ -304,7 +304,7 @@ def sync_cost_sync_queue():
     循环直到无待同步主单（每日定时跑一次即可）。
     """
     import os
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'config.yaml')
+    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'conf', 'config.yaml')
     with open(config_path, encoding='utf-8') as f:
         config = yaml.safe_load(f)
 

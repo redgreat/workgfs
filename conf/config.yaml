@@ -1,0 +1,26 @@
+source_db:
+  host: pc-bp1zip05gl1b1ga3veo.rwlb.rds.aliyuncs.com
+  port: 3306
+  user: user_service
+  password: Lunz2017
+  database: serviceordercenter
+  charset: utf8
+
+mall_db:
+  host: rm-bp17u530nslrwnk75so.mysql.rds.aliyuncs.com
+  port: 3306
+  user: user_mall
+  password: Lunz2017
+  database: mallcenter
+  charset: utf8
+
+target_db:
+  host: rm-bp17u530nslrwnk75so.mysql.rds.aliyuncs.com
+  port: 3306
+  user: user_finance
+  password: Lunz2017
+  database: finance_basic
+  charset: utf8
+
+batch_size: 10000
+schedule_cron: "0 1 1 * *"
