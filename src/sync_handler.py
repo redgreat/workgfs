@@ -1,9 +1,10 @@
 import pymysql
 import yaml
 import time
-import datetime
-from datetime import timedelta, datetime
 from loguru import logger
+
+# 同步完成后在 target_db 调用的无参存储过程（写死，不从配置读取）
+POST_COST_SYNC_PROCEDURE = 'proc_InsertCostInfo_ehcf'
 
 
 def get_db_conn(db_config):
@@ -16,102 +17,54 @@ def get_db_conn(db_config):
         charset=db_config.get('charset', 'utf8')
     )
 
-def get_last_month_range():
-    today = datetime.today()
-    first_day_this_month = today.replace(day=1)
-    last_month_end = first_day_this_month - timedelta(days=1)
-    last_month_start = last_month_end.replace(day=1)
-    return last_month_start.strftime('%Y-%m-%d'), first_day_this_month.strftime('%Y-%m-%d')
 
-def fetch_main_data(conn, start_date=None, end_date=None):
+def fetch_next_cost_sync_main(conn):
     """
-    start_date, end_date: 字符串'YYYY-MM-DD'，闭开区间[start, end)。
-    若为None则自动取上个月自然月。
+    取一条待同步主单：AuditState=1 且 CostSyncState=0，未删除。
+    返回 dict {'Id': ...} 或 None。
     """
-    if not start_date or not end_date:
-        start_date, end_date = get_last_month_range()
+    sql = """
+        SELECT Id
+        FROM main_costsyncinfo
+        WHERE Deleted = 0
+          AND AuditState = 1
+          AND CostSyncState = 0
+        ORDER BY CreatedAt ASC, Id ASC
+        LIMIT 1
+    """
     with conn.cursor() as cursor:
-        sql_1 = f"""
-        SELECT DISTINCT Id, 1 AS Type 
-        FROM vi_workcount_log
-        WHERE CompleteTime>='{start_date}'
-          AND CompleteTime<'{end_date}';
-        """
-        sql_2 = f"""
-        SELECT a.Id, 2 AS Type 
-        FROM tb_workpriceedit_log a
-        JOIN basic_ordertypeinfo b
-        WHERE a.Status=1
-          AND a.OrderType=b.TypeCode
-          AND b.ServiceProviderCode='1001'
-          AND a.OperTime>='{start_date}'
-          AND a.OperTime<'{end_date}'
-          AND a.Deleted=0
-          AND b.Deleted=0
-        """
-        sql_3 = f"""
-        SELECT Id, 3 AS Type 
-        FROM tb_feeapplicationinfo 
-        WHERE AuditStatus=2
-          AND OrgCode='1001'
-          AND LastAuditTime>='{start_date}'
-          AND LastAuditTime<'{end_date}'
-          AND Deleted=0
-        """
-        
-        all_results = []
-        cursor.execute(sql_1)
-        all_results.extend([{'Id': row[0], 'Type': row[1]} for row in cursor.fetchall()])
-        cursor.execute(sql_2)
-        all_results.extend([{'Id': row[0], 'Type': row[1]} for row in cursor.fetchall()])
-        cursor.execute(sql_3)
-        all_results.extend([{'Id': row[0], 'Type': row[1]} for row in cursor.fetchall()])
-        return all_results
+        cursor.execute(sql)
+        row = cursor.fetchone()
+    if not row:
+        return None
+    return {'Id': row[0]}
 
-def fetch_goods_data(orderid, salename):
-    """独立方法：连接mall库并查商品信息"""
-    if not orderid:
-        return []
-    import os
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'config.yaml')
-    import yaml
-    with open(config_path, encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-    if 'mall_db' not in config:
-        return []
-    mall_conn = get_db_conn(config['mall_db'])
-    goods_list = []
-    try:
-        with mall_conn.cursor() as mall_cursor:
-            goods_sql = """
-            SELECT b.GoodsPrice,c.MainPartId,c.MainPartName
-            FROM tb_orderinfo a
-            JOIN tb_orderitem b
-              ON b.OrderId=a.Id
-              AND b.SaleName=%s
-              AND b.Deleted=0
-            JOIN tb_orderitemdetail c
-              ON c.ItemId=b.Id
-              AND c.Deleted=0
-            WHERE a.Deleted=0
-              AND a.Id=%s
-            LIMIT 1;
-            """
-            mall_cursor.execute(goods_sql, (salename, orderid))
-            goods_list = [dict(zip([col[0] for col in mall_cursor.description], g)) for g in mall_cursor.fetchall()]
-    finally:
-        mall_conn.close()
-    return goods_list
 
-def fetch_detail_data(conn, main_data_list):
+def fetch_cost_sync_work_order_ids(conn, cost_sync_id):
+    """主单下已验证通过的明细工单 Id。"""
+    sql = """
+        SELECT WorkOrderId
+        FROM main_costsyncdetail
+        WHERE Deleted = 0
+          AND CostSyncId = %s
+          AND AuditState = 1
+          AND WorkOrderId IS NOT NULL
+          AND WorkOrderId <> ''
+        ORDER BY Id ASC
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(sql, (cost_sync_id,))
+        return [r[0] for r in cursor.fetchall()]
+
+
+def fetch_detail_data(conn, work_order_id):
+    """
+    对单个工单 Id 在壹好车服三张来源各查一条（有则加入结果）。
+    返回 0～3 条 dict；三张都有则三条。
+    """
     results = []
-    for item in main_data_list:
-        main_id = item['Id']
-        main_type = item['Type']
-        row = None
-        with conn.cursor() as cursor:
-            if main_type == 1:
-                sql = """
+    with conn.cursor() as cursor:
+        sql_1 = """
                 SELECT a.Id,
                 a.WorkOrderId,
                 CONCAT(a.AppCode,'-CT-',RIGHT(a.WorkOrderId,10)) AS CostNo,
@@ -163,24 +116,16 @@ def fetch_detail_data(conn, main_data_list):
                 a.TagSign,
                 NULL AS ChangeRemark
                 FROM vi_workcount_log a
-                WHERE a.Id = %s
+                WHERE a.WorkOrderId = %s
+                ORDER BY a.CompleteTime DESC
                 LIMIT 1
                 """
-                cursor.execute(sql, (main_id,))
-                row = cursor.fetchone()
-                if row:
-                    row_dict = dict(zip([col[0] for col in cursor.description], row))
-                    mall_orderid = row_dict.get('OrderId')
-                    mall_salenname = row_dict.get('ArtificialServicePriceName')
-                    goods_info = fetch_goods_data(mall_orderid, mall_salenname)
-                    row_dict['GoodsInfo'] = goods_info
-                    if goods_info and isinstance(goods_info, list) and len(goods_info) > 0 and 'MainPartId' in goods_info[0]:
-                        row_dict['MainPartId'] = goods_info[0]['MainPartId']
-                    if goods_info and isinstance(goods_info, list) and len(goods_info) > 0 and 'MainPartName' in goods_info[0]:
-                        row_dict['MainPartName'] = goods_info[0]['MainPartName']
-                    results.append(row_dict)
-            elif main_type == 2:
-                sql = """
+        cursor.execute(sql_1, (work_order_id,))
+        row = cursor.fetchone()
+        if row:
+            results.append(dict(zip([col[0] for col in cursor.description], row)))
+
+        sql_2 = """
                 SELECT a.Id,CONCAT(a.AppCode,'-CT-',RIGHT(a.WorkOrderId,10)) AS CostNo,a.WorkOrderId,
                 a.AppCode,
                 (SELECT c.MallOrderId FROM tb_workgoodsinfo c WHERE c.WorkOrderId=a.WorkOrderId AND c.GoodsType IN (5,10,11,18,37,38) AND c.Deleted=0 LIMIT 1) AS OrderId,
@@ -233,25 +178,16 @@ def fetch_detail_data(conn, main_data_list):
                   AND b.TagSign='是'
                 WHERE a.Deleted=0
                   AND MONTH(a.OperTime)<>MONTH(b.CompleteTime)
-                  AND a.Id = %s
+                  AND a.WorkOrderId = %s
                 ORDER BY a.OperTime DESC
                 LIMIT 1
                 """
-                cursor.execute(sql, (main_id,))
-                row = cursor.fetchone()
-                if row:
-                    row_dict = dict(zip([col[0] for col in cursor.description], row))
-                    mall_orderid = row_dict.get('OrderId')
-                    mall_salenname = row_dict.get('ArtificialServicePriceName')
-                    goods_info = fetch_goods_data(mall_orderid, mall_salenname)
-                    row_dict['GoodsInfo'] = goods_info
-                    if goods_info and isinstance(goods_info, list) and len(goods_info) > 0 and 'MainPartId' in goods_info[0]:
-                        row_dict['MainPartId'] = goods_info[0]['MainPartId']
-                    if goods_info and isinstance(goods_info, list) and len(goods_info) > 0 and 'MainPartName' in goods_info[0]:
-                        row_dict['MainPartName'] = goods_info[0]['MainPartName']
-                    results.append(row_dict)
-            elif main_type == 3:
-                sql = """
+        cursor.execute(sql_2, (work_order_id,))
+        row = cursor.fetchone()
+        if row:
+            results.append(dict(zip([col[0] for col in cursor.description], row)))
+
+        sql_3 = """
                 SELECT a.Id,CONCAT(b.AppCode,'-CT-',RIGHT(a.TargetId,10)) AS CostNo,a.TargetId AS WorkOrderId,b.AppCode,
                 (SELECT MallOrderId FROM tb_workgoodsinfo h WHERE h.WorkOrderId=b.Id AND h.GoodsType IN (5,10,11,18) AND h.Deleted=0 LIMIT 1) AS OrderId,
                 (SELECT OrderNo FROM tb_workgoodsinfo i WHERE i.WorkOrderId=b.Id AND i.GoodsType IN (5,10,11,18,37,38) AND i.Deleted=0 LIMIT 1) AS OrderNo,
@@ -290,36 +226,27 @@ def fetch_detail_data(conn, main_data_list):
                   ON l.Id=a.FeeItemId
                   AND l.Deleted=0
                 WHERE a.Deleted=0
-                  AND a.Id = %s
+                  AND a.TargetId = %s
+                ORDER BY a.LastAuditTime DESC
+                LIMIT 1
                 """
-                cursor.execute(sql, (main_id,))
-                row = cursor.fetchone()
-                if row:
-                    row_dict = dict(zip([col[0] for col in cursor.description], row))
-                    mall_orderid = row_dict.get('OrderId')
-                    mall_salenname = row_dict.get('ArtificialServicePriceName')
-                    goods_info = fetch_goods_data(mall_orderid, mall_salenname)
-                    row_dict['GoodsInfo'] = goods_info
-                    # 覆盖 MainPartName
-                    if goods_info and isinstance(goods_info, list) and len(goods_info) > 0:
-                        if 'MainPartId' in goods_info[0]:
-                            row_dict['MainPartId'] = goods_info[0]['MainPartId']
-                        if 'MainPartName' in goods_info[0]:
-                            row_dict['MainPartName'] = goods_info[0]['MainPartName']
-                        if 'GoodsPrice' in goods_info[0]:
-                            row_dict['ArtificialServicePrice'] = goods_info[0]['GoodsPrice']
-                    results.append(row_dict) 
+        cursor.execute(sql_3, (work_order_id,))
+        row = cursor.fetchone()
+        if row:
+            results.append(dict(zip([col[0] for col in cursor.description], row)))
+
     return results
 
-def insert_to_target(conn, data):
+
+def insert_to_target(conn, data, commit=True):
+    """写入 workcount_log；commit=False 时由外层事务统一提交。"""
     if not data:
         return
-    # 字段顺序与workcount_log表建表语句一致
     keys = ['Id', 'CostNo', 'WorkOrderId', 'AppCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
         'ProName', 'CityName', 'AreaName', 'InstallAddress', 'CustSettleId', 'CustSettleName', 'CustomerId', 'CustomerName',
-        'CustStoreId','CustStoreName', 'MainPartId', 'MainPartName', 'ActualCustStoreName', 'GeneralGoodsNames', 
+        'CustStoreId','CustStoreName', 'MainPartId', 'MainPartName', 'ActualCustStoreName', 'GeneralGoodsNames',
         'ArtificialServicePriceName', 'ArtificialServicePrice', 'ServiceSubjectName', 'SubjectClassCode', 'ServiceSubjectCode',
-        'InternalPrice', 'CostRemark', 'CostReason', 'FinishTime', 'CostConfirmTime', 'Privoder', 'IsCentralize', 'VinNumber', 
+        'InternalPrice', 'CostRemark', 'CostReason', 'FinishTime', 'CostConfirmTime', 'Privoder', 'IsCentralize', 'VinNumber',
         'GuaVin', 'PlateNumber', 'CompleteTime', 'CreatePersonName', 'ServiceCode', 'ServiceName', 'ServiceAscription',
         'ActualRecordPersonCode', 'ActualRecordPersonName', 'ActualRecordPersonAscription',
         'SendRemark', 'ServiceRemark', 'TagSign', 'ChangeRemark'
@@ -339,43 +266,99 @@ def insert_to_target(conn, data):
         values.append(tuple(row))
     with conn.cursor() as cursor:
         cursor.executemany(sql, values)
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def sync_task(start_date=None, end_date=None):
+def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert):
     """
-    执行数据同步任务，在同步前先清空目标表
+    同一事务：清空 workcount_log、写入本批数据、调用存储过程、主单标记已同步，最后提交。
+    TRUNCATE 会隐式提交，故用 DELETE。
+    调用前须将 tgt_conn 置于 autocommit(False)。
+    """
+    proc = POST_COST_SYNC_PROCEDURE.replace('`', '')
+    with tgt_conn.cursor() as cursor:
+        cursor.execute('DELETE FROM workcount_log')
+    insert_to_target(tgt_conn, rows_to_insert, commit=False)
+    with tgt_conn.cursor() as cursor:
+        cursor.execute(f'CALL `{proc}`()')
+        while cursor.nextset():
+            pass
+    with tgt_conn.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE main_costsyncinfo
+            SET CostSyncState = 1, UpdatedAt = NOW()
+            WHERE Id = %s AND Deleted = 0
+            """,
+            (main_id,),
+        )
+    tgt_conn.commit()
+
+
+def sync_cost_sync_queue():
+    """
+    扫描 main_costsyncinfo（AuditState=1, CostSyncState=0），按明细 WorkOrderId
+    逐单调用 fetch_detail_data（三张表各最多一条），汇总写入；
+    每个主单：目标库单事务内 DELETE workcount_log → REPLACE 写入 → CALL 过程 → 更新主单完成。
+    循环直到无待同步主单（每日定时跑一次即可）。
     """
     import os
     config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'config.yaml')
     with open(config_path, encoding='utf-8') as f:
         config = yaml.safe_load(f)
-        batch_size = config['batch_size']
 
     src_conn = get_db_conn(config['source_db'])
     tgt_conn = get_db_conn(config['target_db'])
+    tgt_conn.autocommit(True)
 
-    total = 0
     start_time = time.time()
-    logger.info(f"[SYNC] Start batch data sync task, start_date={start_date}, end_date={end_date}")
+    logger.info('[SYNC][COST] Start main_costsyncinfo queue sync')
     try:
-        with tgt_conn.cursor() as cursor:
-            cursor.execute("TRUNCATE TABLE workcount_log")
-        tgt_conn.commit()
-        logger.info("[SYNC] Target table workcount_log truncated")
-        
-        all_main_data = fetch_main_data(src_conn, start_date, end_date)
-        logger.info(f"[SYNC] Total main ids to process: {len(all_main_data)}")
-        for i in range(0, len(all_main_data), batch_size):
-            batch_data = all_main_data[i:i+batch_size]
-            data = fetch_detail_data(src_conn, batch_data)
-            insert_to_target(tgt_conn, data)
-            total += len(batch_data)
-            logger.info(f"[SYNC] Batch synced: {len(batch_data)} records, batch {i//batch_size+1}")
+        processed = 0
+        while True:
+            main = fetch_next_cost_sync_main(tgt_conn)
+            if not main:
+                break
+            cost_sync_id = main['Id']
+            work_order_ids = fetch_cost_sync_work_order_ids(tgt_conn, cost_sync_id)
+            logger.info(
+                f'[SYNC][COST] Main Id={cost_sync_id}, work orders count={len(work_order_ids)}'
+            )
+
+            rows_to_insert = []
+            for woid in work_order_ids:
+                rows_to_insert.extend(fetch_detail_data(src_conn, woid))
+
+            if not rows_to_insert and work_order_ids:
+                logger.warning(
+                    f'[SYNC][COST] Main Id={cost_sync_id}: 明细工单在三张来源均无数据，跳过本单（不更新 CostSyncState）'
+                )
+                continue
+
+            try:
+                tgt_conn.autocommit(False)
+                _run_one_main_sync_transaction(tgt_conn, cost_sync_id, rows_to_insert)
+                processed += 1
+                logger.info(
+                    f'[SYNC][COST] Main Id={cost_sync_id} completed, rows={len(rows_to_insert)}, CostSyncState=1'
+                )
+            except Exception as ex:
+                tgt_conn.rollback()
+                logger.exception(
+                    f'[SYNC][COST] Main Id={cost_sync_id} transaction failed: {ex}'
+                )
+            finally:
+                tgt_conn.autocommit(True)
         duration = time.time() - start_time
-        logger.info(f"[SYNC] Sync finished, total={total}, duration={duration:.2f}s")
+        logger.info(f'[SYNC][COST] Finished mains processed={processed}, duration={duration:.2f}s')
     except Exception as e:
-        logger.exception(f"[SYNC] Sync task failed: {e}")
+        logger.exception(f'[SYNC][COST] Queue sync failed: {e}')
     finally:
         src_conn.close()
         tgt_conn.close()
+
+
+def sync_task():
+    """仅执行 main_costsyncinfo 单据同步队列。"""
+    sync_cost_sync_queue()
