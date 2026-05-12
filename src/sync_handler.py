@@ -3,9 +3,6 @@ import yaml
 import time
 from loguru import logger
 
-# 同步完成后在 target_db 调用的无参存储过程（写死，不从配置读取）
-POST_COST_SYNC_PROCEDURE = 'finance_main.proc_InsertCostInfo_ehcf'
-
 
 def get_db_conn(db_config):
     return pymysql.connect(
@@ -273,12 +270,11 @@ def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert):
     TRUNCATE 会隐式提交，故用 DELETE。
     调用前须将 tgt_conn 置于 autocommit(False)。
     """
-    proc = POST_COST_SYNC_PROCEDURE.replace('`', '')
     with tgt_conn.cursor() as cursor:
         cursor.execute('DELETE FROM workcount_log')
     insert_to_target(tgt_conn, rows_to_insert, commit=False)
     with tgt_conn.cursor() as cursor:
-        cursor.execute(f'CALL `{proc}`()')
+        cursor.execute(f'CALL finance_main.proc_InsertCostInfo_ehcf();')
         while cursor.nextset():
             pass
     with tgt_conn.cursor() as cursor:

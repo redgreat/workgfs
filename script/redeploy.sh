@@ -1,11 +1,10 @@
 #!/bin/bash
 
 # 自动定位到项目根目录（script 的上一级）
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${PROJECT_ROOT}" || { echo "进入目录失败，中止执行"; exit 1; }
 
-SERVICE_NAME="postgres"
+SERVICE_NAME="workgfs"
 CONTAINER_NAME="workgfs"
 IMAGE_NAME="registry.cn-hangzhou.aliyuncs.com/redgreat/workgfs:latest"
 
