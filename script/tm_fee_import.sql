@@ -1,6 +1,6 @@
 -- GFS 成本单导入主表/明细（与 workcount_log 同库，如 finance_basic）。
 -- 定时任务逻辑见 src/sync_handler.py：main_costsyncinfo（AuditState=1, CostSyncState=0）
--- + main_costsyncdetail（AuditState=1）的 WorkOrderId 从壹好车服拉数写入 workcount_log，再 CALL config.post_cost_sync_procedure。
+-- + main_costsyncdetail（AuditState=1，明细主键 Id char(12)）的 WorkOrderId 从壹好车服拉数写入 workcount_log（含 CostSyncId、CostSyncDetailId），再 CALL 存储过程。
 
 CREATE TABLE `main_costsyncinfo` (
   `Id` char(12) NOT NULL COMMENT '主键(CA)递减',
@@ -26,7 +26,7 @@ CREATE TABLE `main_costsyncinfo` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='业务实现层_成本单导入管理记录';
 
 CREATE TABLE `main_costsyncdetail` (
-  `Id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键(自增)',
+  `Id` char(12) NOT NULL COMMENT '主键(业务主键，与 workcount_log.CostSyncDetailId 对应)',
   `CostSyncId` char(12) DEFAULT NULL COMMENT '成本单导入管理记录Id(finance_main.main_costsyncinfo.Id)',
   `WorkOrderId` varchar(50) DEFAULT NULL COMMENT '工单Id',
   `AppNo` varchar(100) DEFAULT NULL COMMENT '工单编号',
@@ -53,4 +53,6 @@ CREATE TABLE `main_costsyncdetail` (
   KEY `NON-CostSyncId` (`CostSyncId`) USING BTREE,
   KEY `NON-WorkOrderId` (`WorkOrderId`) USING BTREE,
   KEY `NON-AppNo` (`AppNo`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=75 DEFAULT CHARSET=utf8mb3 COMMENT='业务实现层_成本单导入管理记录失败明细';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COMMENT='业务实现层_成本单导入管理记录失败明细';
+
+-- 若线上仍为 bigint 自增 Id，需自行迁移为 char(12) 并回填 Id，再与 workcount_log.CostSyncDetailId 对齐。
