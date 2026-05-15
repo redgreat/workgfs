@@ -5,13 +5,15 @@ from loguru import logger
 
 
 def get_db_conn(db_config):
+    # 使用 utf8mb4，避免 utf8(utf8mb3) 与库内四字节字符/函数返回值不兼容触发 1366
     return pymysql.connect(
         host=db_config['host'],
         port=db_config['port'],
         user=db_config['user'],
         password=db_config['password'],
         database=db_config['database'],
-        charset=db_config.get('charset', 'utf8')
+        charset=db_config.get('charset', 'utf8mb4'),
+        use_unicode=True,
     )
 
 
@@ -166,7 +168,10 @@ def fetch_detail_data(conn, work_order_id):
             a.CreatePersonName,
             a.ServiceCode,
             a.ServiceName,
-            a.ServiceAscription,
+            GetAscriptionByLoginName(
+              CAST(CONVERT(TRIM(IFNULL(a.ServiceCode, '')) USING latin1) AS CHAR(50) CHARACTER SET utf8),
+              1
+            ) AS ServiceAscription,
             a.ActualRecordPersonCode,
             a.ActualRecordPersonName,
             a.ActualRecordPersonAscription,
@@ -221,7 +226,10 @@ def fetch_detail_data(conn, work_order_id):
             b.CreatePersonName,
             b.ServiceCode,
             b.ServiceName,
-            b.ServiceAscription,
+            GetAscriptionByLoginName(
+              CAST(CONVERT(TRIM(IFNULL(b.ServiceCode, '')) USING latin1) AS CHAR(50) CHARACTER SET utf8),
+              1
+            ) AS ServiceAscription,
             b.ActualRecordPersonCode,
             b.ActualRecordPersonName,
             b.ActualRecordPersonAscription,
@@ -282,13 +290,33 @@ def fetch_detail_data(conn, work_order_id):
             a.ApplyPersonName AS CreatePersonName,
             d.ServiceCode,
             d.ServiceName,
-            GetAscriptionByLoginName(d.ServiceCode, 1) AS ServiceAscription,
+            /* 入参可能含非法 UTF-8，直接进 GetAscriptionByLoginName 会与 loginname 比较触发 1366；先经 latin1 有损转码再 CAST 回 utf8 */
+            GetAscriptionByLoginName(
+              CAST(CONVERT(TRIM(IFNULL(d.ServiceCode, '')) USING latin1) AS CHAR(50) CHARACTER SET utf8),
+              1
+            ) AS ServiceAscription,
             fn_GetRecordCodeById(a.TargetId) AS ActualRecordPersonCode,
             fn_GetRecordNameById(a.TargetId) AS ActualRecordPersonName,
-            GetAscriptionByLoginName(fn_GetRecordCodeById(a.TargetId), 1) AS ActualRecordPersonAscription,
+            GetAscriptionByLoginName(
+              CAST(CONVERT(TRIM(IFNULL(fn_GetRecordCodeById(a.TargetId), '')) USING latin1) AS CHAR(50) CHARACTER SET utf8),
+              1
+            ) AS ActualRecordPersonAscription,
             NULL AS SendRemark,
             d.Remark AS ServiceRemark,
-            fn_GetDispatchRemarkById(a.TargetId) AS DispatchRemark,
+            /* 避免 fn_GetDispatchRemarkById 内 INTO/脏字节触发 1366：与函数同逻辑内联，并对 Remark 做 utf8 安全清洗 */
+            (SELECT CAST(CONVERT(TRIM(IFNULL(wa.Remark, '')) USING latin1) AS CHAR(500) CHARACTER SET utf8)
+             FROM workflowruntimeitems wi
+             JOIN workflowruntimesteps ws ON ws.RuntimeItemId = wi.Id
+                AND ws.Name IN ('分派工单', '分派', '重新派单', '分配工单', '派单', '重新调度', '调度工单')
+                AND ws.`Status` = 'ACCEPTED'
+                AND ws.Deleted = 0
+             JOIN workflowruntimeactors wa ON wa.RuntimeStepId = ws.Id
+                AND wa.`Status` = 'ACCEPTED'
+                AND wa.Deleted = 0
+             WHERE wi.TargetEntityId = a.TargetId
+               AND wi.Deleted = 0
+             ORDER BY ws.DoneAt DESC
+             LIMIT 1) AS DispatchRemark,
             '否' AS TagSign,
             NULL AS ChangeRemark
           FROM tb_feeapplicationinfo a
