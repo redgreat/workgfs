@@ -332,7 +332,7 @@ def insert_to_target(conn, data, commit=True):
     """写入 workcount_log；commit=False 时由外层事务统一提交。"""
     if not data:
         return
-    keys = ['Id', 'CostNo', 'WorkOrderId', 'AppCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
+    keys = ['Id', 'CostSyncId', 'CostNo', 'WorkOrderId', 'AppCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
         'ProName', 'CityName', 'AreaName', 'InstallAddress', 'CustSettleId', 'CustSettleName', 'CustomerId', 'CustomerName',
         'CustStoreId','CustStoreName', 'MainPartId', 'MainPartName', 'ActualCustStoreName', 'GeneralGoodsNames',
         'ArtificialServicePriceName', 'ArtificialServicePrice', 'ServiceSubjectName', 'SubjectClassCode', 'ServiceSubjectCode',
@@ -416,7 +416,9 @@ def sync_cost_sync_queue():
 
             rows_to_insert = []
             for woid in work_order_ids:
-                rows_to_insert.extend(fetch_detail_data(src_conn, woid))
+                for row in fetch_detail_data(src_conn, woid):
+                    row['CostSyncId'] = cost_sync_id
+                    rows_to_insert.append(row)
 
             if not rows_to_insert and work_order_ids:
                 logger.warning(
