@@ -53,183 +53,279 @@ def fetch_cost_sync_work_order_ids(conn, cost_sync_id):
 
 def fetch_detail_data(conn, work_order_id):
     """
-    对单个工单 Id 在壹好车服三张来源各查一条（有则加入结果）。
-    返回 0～3 条 dict；三张都有则三条。
+    按工单 Id 从壹好车服合并查询（vi_workcount / 调价 / 费用申请），
+    以 tb_workorderinfo 为主表，同一工单固定返回 0～1 条。
     """
-    results = []
+    sql = """
+        SELECT
+          COALESCE(v.Id, e.Id, f.Id) AS Id,
+          wo.Id AS WorkOrderId,
+          COALESCE(
+            v.CostNo,
+            e.CostNo,
+            f.CostNo,
+            CONCAT(IFNULL(wo.AppCode, ''), '-CT-', RIGHT(wo.Id, 10))
+          ) AS CostNo,
+          COALESCE(v.AppCode, e.AppCode, f.AppCode, wo.AppCode) AS AppCode,
+          COALESCE(v.OrderId, e.OrderId, f.OrderId) AS OrderId,
+          COALESCE(v.OrderNo, e.OrderNo, f.OrderNo) AS OrderNo,
+          COALESCE(v.OrderType, e.OrderType, f.OrderType, 1) AS OrderType,
+          COALESCE(
+            v.WorkOrderType,
+            e.WorkOrderType,
+            f.WorkOrderType,
+            fn_GetOrderTypeByCode(wo.OrderType)
+          ) AS WorkOrderType,
+          COALESCE(
+            v.WorkStatus,
+            e.WorkStatus,
+            f.WorkStatus,
+            fn_GetServiceOrderStatus(wo.WorkStatus)
+          ) AS WorkStatus,
+          COALESCE(v.ProName, e.ProName, f.ProName, wo.ProName) AS ProName,
+          COALESCE(v.CityName, e.CityName, f.CityName, wo.CityName) AS CityName,
+          COALESCE(v.AreaName, e.AreaName, f.AreaName, wo.AreaName) AS AreaName,
+          COALESCE(v.InstallAddress, e.InstallAddress, f.InstallAddress, wo.InstallAddress) AS InstallAddress,
+          COALESCE(v.CustSettleId, e.CustSettleId, f.CustSettleId, wo.CustSettleId) AS CustSettleId,
+          COALESCE(v.CustSettleName, e.CustSettleName, f.CustSettleName, wo.CustSettleName) AS CustSettleName,
+          COALESCE(v.CustomerId, e.CustomerId, f.CustomerId, wo.CustomerId) AS CustomerId,
+          COALESCE(v.CustomerName, e.CustomerName, f.CustomerName, wo.CustomerName) AS CustomerName,
+          COALESCE(v.CustStoreId, e.CustStoreId, f.CustStoreId, wo.CustStoreId) AS CustStoreId,
+          COALESCE(v.CustStoreName, e.CustStoreName, f.CustStoreName, wo.CustStoreName) AS CustStoreName,
+          COALESCE(v.ActualCustStoreName, e.ActualCustStoreName, f.ActualCustStoreName) AS ActualCustStoreName,
+          NULL AS MainPartId,
+          NULL AS MainPartName,
+          COALESCE(v.GeneralGoodsNames, e.GeneralGoodsNames, f.GeneralGoodsNames) AS GeneralGoodsNames,
+          COALESCE(v.ArtificialServicePriceName, e.ArtificialServicePriceName, f.ArtificialServicePriceName) AS ArtificialServicePriceName,
+          COALESCE(v.ArtificialServicePrice, e.ArtificialServicePrice, f.ArtificialServicePrice) AS ArtificialServicePrice,
+          COALESCE(v.ServiceSubjectName, e.ServiceSubjectName, f.ServiceSubjectName) AS ServiceSubjectName,
+          COALESCE(v.SubjectClassCode, e.SubjectClassCode, f.SubjectClassCode) AS SubjectClassCode,
+          COALESCE(v.ServiceSubjectCode, e.ServiceSubjectCode, f.ServiceSubjectCode) AS ServiceSubjectCode,
+          COALESCE(v.InternalPrice, e.InternalPrice, f.InternalPrice) AS InternalPrice,
+          COALESCE(v.CostReason, e.CostReason, f.CostReason) AS CostReason,
+          COALESCE(v.CostRemark, e.CostRemark, f.CostRemark, '基础计价') AS CostRemark,
+          COALESCE(v.FinishTime, e.FinishTime, f.FinishTime) AS FinishTime,
+          COALESCE(v.CostConfirmTime, e.CostConfirmTime, f.CostConfirmTime) AS CostConfirmTime,
+          COALESCE(v.Privoder, e.Privoder, f.Privoder) AS Privoder,
+          COALESCE(v.IsCentralize, e.IsCentralize, f.IsCentralize) AS IsCentralize,
+          COALESCE(v.VinNumber, e.VinNumber, f.VinNumber) AS VinNumber,
+          COALESCE(v.GuaVin, e.GuaVin, f.GuaVin) AS GuaVin,
+          COALESCE(v.PlateNumber, e.PlateNumber, f.PlateNumber) AS PlateNumber,
+          COALESCE(v.CompleteTime, e.CompleteTime, f.CompleteTime) AS CompleteTime,
+          COALESCE(v.CreatePersonName, e.CreatePersonName, f.CreatePersonName, wo.CreatePersonName) AS CreatePersonName,
+          COALESCE(v.ServiceCode, e.ServiceCode, f.ServiceCode) AS ServiceCode,
+          COALESCE(v.ServiceName, e.ServiceName, f.ServiceName) AS ServiceName,
+          COALESCE(v.ServiceAscription, e.ServiceAscription, f.ServiceAscription) AS ServiceAscription,
+          COALESCE(v.ActualRecordPersonCode, e.ActualRecordPersonCode, f.ActualRecordPersonCode) AS ActualRecordPersonCode,
+          COALESCE(v.ActualRecordPersonName, e.ActualRecordPersonName, f.ActualRecordPersonName) AS ActualRecordPersonName,
+          COALESCE(v.ActualRecordPersonAscription, e.ActualRecordPersonAscription, f.ActualRecordPersonAscription) AS ActualRecordPersonAscription,
+          COALESCE(v.SendRemark, e.SendRemark, f.DispatchRemark, wo.Remark) AS SendRemark,
+          COALESCE(v.ServiceRemark, e.ServiceRemark, f.ServiceRemark) AS ServiceRemark,
+          COALESCE(v.TagSign, e.TagSign, f.TagSign, '否') AS TagSign,
+          COALESCE(v.ChangeRemark, e.ChangeRemark, f.ChangeRemark) AS ChangeRemark
+        FROM tb_workorderinfo wo
+        LEFT JOIN (
+          SELECT
+            a.Id,
+            a.WorkOrderId,
+            CONCAT(a.AppCode, '-CT-', RIGHT(a.WorkOrderId, 10)) AS CostNo,
+            a.AppCode,
+            (SELECT MallOrderId FROM tb_workgoodsinfo b WHERE b.WorkOrderId = a.WorkOrderId AND b.GoodsType IN (5, 10, 11, 18, 37, 38) AND b.Deleted = 0 LIMIT 1) AS OrderId,
+            (SELECT OrderNo FROM tb_workgoodsinfo c WHERE c.WorkOrderId = a.WorkOrderId AND c.GoodsType IN (5, 10, 11, 18, 37, 38) AND c.Deleted = 0 LIMIT 1) AS OrderNo,
+            1 AS OrderType,
+            a.OrderTypeName AS WorkOrderType,
+            a.WorkStatusName AS WorkStatus,
+            a.ProName,
+            a.CityName,
+            a.AreaName,
+            a.InstallAddress,
+            a.CustSettleId,
+            a.CustSettleName,
+            a.CustomerId,
+            a.CustomerName,
+            a.CustStoreId,
+            a.CustStoreName,
+            a.ActualCustStoreName,
+            a.GeneralGoodsNames,
+            a.ArtificialServicePriceName,
+            a.ArtificialServicePrice,
+            a.ServiceSubjectName,
+            a.SubjectClassCode,
+            a.ServiceSubjectCode,
+            a.InternalPrice,
+            a.PricingMethodName AS CostReason,
+            '基础计价' AS CostRemark,
+            a.CompleteTime AS FinishTime,
+            a.CompleteTime AS CostConfirmTime,
+            a.Privoder,
+            a.IsCentralize,
+            a.VinNumber,
+            a.GuaVin,
+            a.PlateNumber,
+            a.CompleteTime,
+            a.CreatePersonName,
+            a.ServiceCode,
+            a.ServiceName,
+            a.ServiceAscription,
+            a.ActualRecordPersonCode,
+            a.ActualRecordPersonName,
+            a.ActualRecordPersonAscription,
+            a.SendRemark,
+            a.ServiceRemark,
+            a.TagSign,
+            NULL AS ChangeRemark
+          FROM vi_workcount_log a
+          WHERE a.WorkOrderId = %s
+          ORDER BY a.CompleteTime DESC
+          LIMIT 1
+        ) v ON TRUE
+        LEFT JOIN (
+          SELECT
+            a.Id,
+            a.WorkOrderId,
+            CONCAT(a.AppCode, '-CT-', RIGHT(a.WorkOrderId, 10)) AS CostNo,
+            a.AppCode,
+            (SELECT c.MallOrderId FROM tb_workgoodsinfo c WHERE c.WorkOrderId = a.WorkOrderId AND c.GoodsType IN (5, 10, 11, 18, 37, 38) AND c.Deleted = 0 LIMIT 1) AS OrderId,
+            (SELECT d.OrderNo FROM tb_workgoodsinfo d WHERE d.WorkOrderId = a.WorkOrderId AND d.GoodsType IN (5, 10, 11, 18, 37, 38) AND d.Deleted = 0 LIMIT 1) AS OrderNo,
+            1 AS OrderType,
+            a.OrderTypeName AS WorkOrderType,
+            b.WorkStatusName AS WorkStatus,
+            b.ProName,
+            b.CityName,
+            b.AreaName,
+            b.InstallAddress,
+            NULL AS CustSettleId,
+            b.CustSettleName,
+            NULL AS CustomerId,
+            b.CustomerName,
+            NULL AS CustStoreId,
+            b.CustStoreName,
+            b.ActualCustStoreName,
+            b.GeneralGoodsNames,
+            a.ArtificialServicePriceName,
+            b.ArtificialServicePrice,
+            b.ServiceSubjectName,
+            b.SubjectClassCode,
+            b.ServiceSubjectCode,
+            (a.InternalPrice - b.InternalPrice) AS InternalPrice,
+            b.PricingMethodName AS CostReason,
+            '基础计价' AS CostRemark,
+            a.OperTime AS FinishTime,
+            a.OperTime AS CostConfirmTime,
+            b.Privoder,
+            b.IsCentralize,
+            b.VinNumber,
+            b.GuaVin,
+            b.PlateNumber,
+            b.CompleteTime,
+            b.CreatePersonName,
+            b.ServiceCode,
+            b.ServiceName,
+            b.ServiceAscription,
+            b.ActualRecordPersonCode,
+            b.ActualRecordPersonName,
+            b.ActualRecordPersonAscription,
+            b.SendRemark,
+            b.ServiceRemark,
+            '是' AS TagSign,
+            a.Remark AS ChangeRemark
+          FROM tb_workpriceedit_log a
+          JOIN vi_workcount_log b
+            ON b.WorkOrderId = a.WorkOrderId
+           AND a.ArtificialServicePriceId = b.ArtificialServicePriceId
+           AND b.TagSign = '是'
+          WHERE a.Deleted = 0
+            AND MONTH(a.OperTime) <> MONTH(b.CompleteTime)
+            AND a.WorkOrderId = %s
+          ORDER BY a.OperTime DESC
+          LIMIT 1
+        ) e ON TRUE
+        LEFT JOIN (
+          SELECT
+            a.Id,
+            a.TargetId AS WorkOrderId,
+            CONCAT(b.AppCode, '-CT-', RIGHT(a.TargetId, 10)) AS CostNo,
+            b.AppCode,
+            (SELECT MallOrderId FROM tb_workgoodsinfo h WHERE h.WorkOrderId = b.Id AND h.GoodsType IN (5, 10, 11, 18) AND h.Deleted = 0 LIMIT 1) AS OrderId,
+            (SELECT OrderNo FROM tb_workgoodsinfo i WHERE i.WorkOrderId = b.Id AND i.GoodsType IN (5, 10, 11, 18, 37, 38) AND i.Deleted = 0 LIMIT 1) AS OrderNo,
+            2 AS OrderType,
+            fn_GetOrderTypeByCode(b.OrderType) AS WorkOrderType,
+            fn_GetStatusNameByCode(a.ApplyWorkStatus) AS WorkStatus,
+            b.ProName,
+            b.CityName,
+            b.AreaName,
+            b.InstallAddress,
+            b.CustSettleId,
+            b.CustSettleName,
+            b.CustomerId,
+            b.CustomerName,
+            b.CustStoreId,
+            b.CustStoreName,
+            NULL AS ActualCustStoreName,
+            (SELECT SaleName FROM tb_workgoodsinfo j WHERE j.WorkOrderId = b.Id AND j.GoodsType = 0 AND j.Deleted = 0 LIMIT 1) AS GeneralGoodsNames,
+            (SELECT SaleName FROM tb_workgoodsinfo k WHERE k.WorkOrderId = b.Id AND k.GoodsType IN (5, 10, 11, 18, 37, 38) AND k.Deleted = 0 LIMIT 1) AS ArtificialServicePriceName,
+            NULL AS ArtificialServicePrice,
+            c.SubjectNameSummary AS ServiceSubjectName,
+            c.SubjectCodeSummary AS SubjectClassCode,
+            NULL AS ServiceSubjectCode,
+            a.ApplyFee AS InternalPrice,
+            a.ApplyReason AS CostReason,
+            l.Remark AS CostRemark,
+            a.FeeApplyTime AS FinishTime,
+            a.LastAuditTime AS CostConfirmTime,
+            CASE d.Privoder WHEN 0 THEN '中瑞' WHEN 1 THEN '客户' END AS Privoder,
+            CASE d.ServiceType WHEN 4 THEN '常规安装' WHEN 5 THEN '上门安装' WHEN 6 THEN '集中安装' WHEN 7 THEN '道路救援' END AS IsCentralize,
+            g.VinNumber,
+            f.`Value` AS GuaVin,
+            g.PlateNumber,
+            a.LastAuditTime AS CompleteTime,
+            a.ApplyPersonName AS CreatePersonName,
+            d.ServiceCode,
+            d.ServiceName,
+            GetAscriptionByLoginName(d.ServiceCode, 1) AS ServiceAscription,
+            fn_GetRecordCodeById(a.TargetId) AS ActualRecordPersonCode,
+            fn_GetRecordNameById(a.TargetId) AS ActualRecordPersonName,
+            GetAscriptionByLoginName(fn_GetRecordCodeById(a.TargetId), 1) AS ActualRecordPersonAscription,
+            NULL AS SendRemark,
+            d.Remark AS ServiceRemark,
+            fn_GetDispatchRemarkById(a.TargetId) AS DispatchRemark,
+            '否' AS TagSign,
+            NULL AS ChangeRemark
+          FROM tb_feeapplicationinfo a
+          JOIN tb_workorderinfo b
+            ON a.TargetId = b.Id
+           AND b.Deleted = 0
+          LEFT JOIN tb_worksubjectsummary c
+            ON b.Id = c.WorkOrderId
+           AND c.Deleted = 0
+          LEFT JOIN tb_workserviceinfo d
+            ON d.WorkOrderId = b.Id
+           AND d.Deleted = 0
+          LEFT JOIN tb_custcolumn f
+            ON f.WorkOrderId = b.Id
+           AND f.TypeName = '挂车车架号'
+           AND f.Deleted = 0
+          JOIN tb_workcarinfo g
+            ON g.WorkOrderId = b.Id
+           AND g.Deleted = 0
+          LEFT JOIN tb_feeiteminfo l
+            ON l.Id = a.FeeItemId
+           AND l.Deleted = 0
+          WHERE a.Deleted = 0
+            AND a.TargetId = %s
+          ORDER BY a.LastAuditTime DESC
+          LIMIT 1
+        ) f ON TRUE
+        WHERE wo.Id = %s
+          AND wo.Deleted = 0
+    """
+    params = (work_order_id, work_order_id, work_order_id, work_order_id)
     with conn.cursor() as cursor:
-        sql_1 = """
-                SELECT a.Id,
-                a.WorkOrderId,
-                CONCAT(a.AppCode,'-CT-',RIGHT(a.WorkOrderId,10)) AS CostNo,
-                a.AppCode,
-                (SELECT MallOrderId FROM tb_workgoodsinfo b WHERE b.WorkOrderId=a.WorkOrderId AND b.GoodsType IN (5,10,11,18,37,38) AND b.Deleted=0 LIMIT 1) AS OrderId,
-                (SELECT OrderNo FROM tb_workgoodsinfo c WHERE c.WorkOrderId=a.WorkOrderId AND c.GoodsType IN (5,10,11,18,37,38) AND c.Deleted=0 LIMIT 1) AS OrderNo,
-                1 AS OrderType,
-                a.OrderTypeName AS WorkOrderType,
-                a.WorkStatusName AS WorkStatus,
-                a.ProName,
-                a.CityName,
-                a.AreaName,
-                a.InstallAddress,
-                a.CustSettleId,
-                a.CustSettleName,
-                a.CustomerId,
-                a.CustomerName,
-                a.CustStoreId,
-                a.CustStoreName,
-                a.ActualCustStoreName,
-                NULL AS MainPartId,
-                NULL AS MainPartName,
-                a.GeneralGoodsNames,
-                a.ArtificialServicePriceName,
-                a.ArtificialServicePrice,
-                a.ServiceSubjectName,
-                a.SubjectClassCode,
-                a.ServiceSubjectCode,
-                a.InternalPrice,
-                a.PricingMethodName AS CostReason,
-                '基础计价' AS CostRemark,
-                a.CompleteTime AS FinishTime,
-                a.CompleteTime AS CostConfirmTime,
-                a.Privoder,
-                a.IsCentralize,
-                a.VinNumber,
-                a.GuaVin,
-                a.PlateNumber,
-                a.CompleteTime,
-                a.CreatePersonName,
-                a.ServiceCode,
-                a.ServiceName,
-                a.ServiceAscription,
-                a.ActualRecordPersonCode,
-                a.ActualRecordPersonName,
-                a.ActualRecordPersonAscription,
-                a.SendRemark,
-                a.ServiceRemark,
-                a.TagSign,
-                NULL AS ChangeRemark
-                FROM vi_workcount_log a
-                WHERE a.WorkOrderId = %s
-                ORDER BY a.CompleteTime DESC
-                LIMIT 1
-                """
-        cursor.execute(sql_1, (work_order_id,))
+        cursor.execute(sql, params)
         row = cursor.fetchone()
-        if row:
-            results.append(dict(zip([col[0] for col in cursor.description], row)))
-
-        sql_2 = """
-                SELECT a.Id,CONCAT(a.AppCode,'-CT-',RIGHT(a.WorkOrderId,10)) AS CostNo,a.WorkOrderId,
-                a.AppCode,
-                (SELECT c.MallOrderId FROM tb_workgoodsinfo c WHERE c.WorkOrderId=a.WorkOrderId AND c.GoodsType IN (5,10,11,18,37,38) AND c.Deleted=0 LIMIT 1) AS OrderId,
-                (SELECT d.OrderNo FROM tb_workgoodsinfo d WHERE d.WorkOrderId=a.WorkOrderId AND d.GoodsType IN (5,10,11,18,37,38) AND d.Deleted=0 LIMIT 1) AS OrderNo,
-                1 AS OrderType,
-                a.OrderTypeName AS WorkOrderType,
-                b.WorkStatusName AS WorkStatus,
-                b.ProName,
-                b.CityName,
-                b.AreaName,
-                b.InstallAddress,
-                b.CustSettleName,
-                b.CustomerName,
-                b.CustStoreName,
-                b.ActualCustStoreName,
-                NULL AS MainPartId,
-                NULL AS MainPartName,
-                b.GeneralGoodsNames,
-                a.ArtificialServicePriceName,
-                b.ArtificialServicePrice,
-                b.ServiceSubjectName,
-                b.SubjectClassCode,
-                b.ServiceSubjectCode,
-                a.InternalPrice-b.InternalPrice AS InternalPrice,
-                b.PricingMethodName AS CostReason,
-                '基础计价' AS CostRemark,
-                a.OperTime AS FinishTime,
-                a.OperTime AS CostConfirmTime,
-                b.Privoder,
-                b.IsCentralize,
-                b.VinNumber,
-                b.GuaVin,
-                b.PlateNumber,
-                b.CompleteTime,
-                b.CreatePersonName,
-                b.ServiceCode,
-                b.ServiceName,
-                b.ServiceAscription,
-                b.ActualRecordPersonCode,
-                b.ActualRecordPersonName,
-                b.ActualRecordPersonAscription,
-                b.SendRemark,
-                b.ServiceRemark,
-                '是' AS TagSign,
-                a.Remark AS ChangeRemark
-                FROM tb_workpriceedit_log a
-                JOIN vi_workcount_log b
-                  ON b.WorkOrderId=a.WorkOrderId
-                  AND a.ArtificialServicePriceId=b.ArtificialServicePriceId
-                  AND b.TagSign='是'
-                WHERE a.Deleted=0
-                  AND MONTH(a.OperTime)<>MONTH(b.CompleteTime)
-                  AND a.WorkOrderId = %s
-                ORDER BY a.OperTime DESC
-                LIMIT 1
-                """
-        cursor.execute(sql_2, (work_order_id,))
-        row = cursor.fetchone()
-        if row:
-            results.append(dict(zip([col[0] for col in cursor.description], row)))
-
-        sql_3 = """
-                SELECT a.Id,CONCAT(b.AppCode,'-CT-',RIGHT(a.TargetId,10)) AS CostNo,a.TargetId AS WorkOrderId,b.AppCode,
-                (SELECT MallOrderId FROM tb_workgoodsinfo h WHERE h.WorkOrderId=b.Id AND h.GoodsType IN (5,10,11,18) AND h.Deleted=0 LIMIT 1) AS OrderId,
-                (SELECT OrderNo FROM tb_workgoodsinfo i WHERE i.WorkOrderId=b.Id AND i.GoodsType IN (5,10,11,18,37,38) AND i.Deleted=0 LIMIT 1) AS OrderNo,
-                2 AS OrderType,fn_GetOrderTypeByCode(b.OrderType) AS WorkOrderType,fn_GetStatusNameByCode(a.ApplyWorkStatus) AS WorkStatus,
-                b.ProName,b.CityName,b.AreaName,b.InstallAddress,b.CustSettleId,b.CustSettleName,b.CustomerId,b.CustomerName,b.CustStoreId,
-                b.CustStoreName,NULL AS MainPartId, NULL AS MainPartName, NULL AS ActualCustStoreName,
-                (SELECT SaleName FROM tb_workgoodsinfo j WHERE j.WorkOrderId=b.Id AND j.GoodsType = 0 AND j.Deleted=0 LIMIT 1) AS GeneralGoodsNames,
-                (SELECT SaleName FROM tb_workgoodsinfo k WHERE k.WorkOrderId=b.Id AND k.GoodsType IN (5,10,11,18,37,38) AND k.Deleted=0 LIMIT 1) AS ArtificialServicePriceName,
-                NULL AS ArtificialServicePrice,c.SubjectNameSummary AS ServiceSubjectName,c.SubjectCodeSummary AS SubjectClassCode,
-                a.ApplyFee AS InternalPrice,l.Remark AS CostRemark,a.ApplyReason AS CostReason,a.FeeApplyTime AS FinishTime,a.LastAuditTime AS CostConfirmTime,
-                CASE d.Privoder WHEN 0 THEN '中瑞' WHEN 1 THEN '客户' END AS Privoder,
-                CASE d.ServiceType WHEN 4 THEN '常规安装' WHEN 5 THEN '上门安装' WHEN 6 THEN '集中安装' WHEN 7 THEN '道路救援' END AS IsCentralize,
-                g.VinNumber,f.`Value` AS GuaVin,g.PlateNumber,a.LastAuditTime AS CompleteTime, a.ApplyPersonName AS CreatePersonName,
-                d.ServiceCode,d.ServiceName,GetAscriptionByLoginName(d.ServiceCode,1) AS ServiceAscription,
-                fn_GetRecordCodeById(a.TargetId) AS ActualRecordPersonCode,fn_GetRecordNameById(a.TargetId) AS ActualRecordPersonName,
-                GetAscriptionByLoginName(fn_GetRecordCodeById(a.TargetId),1) AS ActualRecordPersonAscription,
-                d.Remark AS ServiceRemark,fn_GetDispatchRemarkById(a.TargetId) AS DispatchRemark,'否' AS TagSign,NULL AS ChangeRemark
-                FROM tb_feeapplicationinfo a
-                JOIN tb_workorderinfo b
-                  ON a.TargetId=b.Id
-                  AND b.Deleted=0
-                LEFT JOIN tb_worksubjectsummary c
-                  ON b.Id = c.WorkOrderId
-                  AND c.Deleted = 0
-                LEFT JOIN tb_workserviceinfo d
-                  ON d.WorkOrderId = b.Id
-                  AND d.Deleted = 0
-                LEFT JOIN tb_custcolumn f
-                  ON f.WorkOrderId=b.Id
-                  AND f.TypeName='挂车车架号'
-                  AND f.Deleted=0
-                JOIN tb_workcarinfo g
-                  ON g.WorkOrderId=b.Id
-                  AND g.Deleted=0
-                LEFT JOIN tb_feeiteminfo l
-                  ON l.Id=a.FeeItemId
-                  AND l.Deleted=0
-                WHERE a.Deleted=0
-                  AND a.TargetId = %s
-                ORDER BY a.LastAuditTime DESC
-                LIMIT 1
-                """
-        cursor.execute(sql_3, (work_order_id,))
-        row = cursor.fetchone()
-        if row:
-            results.append(dict(zip([col[0] for col in cursor.description], row)))
-
-    return results
+    if not row:
+        return []
+    return [dict(zip([col[0] for col in cursor.description], row))]
 
 
 def insert_to_target(conn, data, commit=True):
@@ -292,7 +388,7 @@ def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert):
 def sync_cost_sync_queue():
     """
     扫描 main_costsyncinfo（AuditState=1, CostSyncState=0），按明细 WorkOrderId
-    逐单调用 fetch_detail_data（三张表各最多一条），汇总写入；
+    逐单调用 fetch_detail_data（合并查询，每工单 0～1 条），汇总写入；
     每个主单：目标库单事务内 DELETE workcount_log → REPLACE 写入 → CALL 过程 → 更新主单完成。
     注意：本次任务只处理“启动时快照”的主单集合，避免跳过记录造成循环内重复命中。
     每日定时跑一次，下次任务再重新扫描未同步主单。
@@ -324,7 +420,7 @@ def sync_cost_sync_queue():
 
             if not rows_to_insert and work_order_ids:
                 logger.warning(
-                    f'[SYNC][COST] Main Id={cost_sync_id}: 明细工单在三张来源均无数据，跳过本单（不更新 CostSyncState）'
+                    f'[SYNC][COST] Main Id={cost_sync_id}: 明细工单在 tb_workorderinfo 无数据，跳过本单（不更新 CostSyncState）'
                 )
                 continue
 
