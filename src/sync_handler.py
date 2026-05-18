@@ -60,7 +60,7 @@ def fetch_detail_data(conn, work_order_id):
     """
     sql = """
         SELECT
-          COALESCE(v.Id, e.Id, f.Id) AS Id,
+          COALESCE(v.Id, e.Id, f.Id, wo.Id) AS Id,
           wo.Id AS WorkOrderId,
           COALESCE(
             v.CostNo,
