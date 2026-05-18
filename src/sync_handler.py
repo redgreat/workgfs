@@ -36,10 +36,10 @@ def fetch_pending_cost_sync_main_ids(conn):
     return [r[0] for r in rows]
 
 
-def fetch_cost_sync_details(conn, cost_sync_id):
-    """主单下已验证通过的明细：CostSyncDetailId（明细主键 char(12)）+ WorkOrderId。"""
+def fetch_cost_sync_work_order_ids(conn, cost_sync_id):
+    """主单下已验证通过的明细工单 Id。"""
     sql = """
-        SELECT Id, WorkOrderId
+        SELECT WorkOrderId
         FROM finance_main.main_costsyncdetail
         WHERE Deleted = 0
           AND CostSyncId = %s
@@ -50,8 +50,7 @@ def fetch_cost_sync_details(conn, cost_sync_id):
     """
     with conn.cursor() as cursor:
         cursor.execute(sql, (cost_sync_id,))
-        rows = cursor.fetchall()
-    return [{'CostSyncDetailId': r[0], 'WorkOrderId': r[1]} for r in rows]
+        return [r[0] for r in cursor.fetchall()]
 
 
 def fetch_detail_data(conn, work_order_id):
@@ -361,7 +360,7 @@ def insert_to_target(conn, data, commit=True):
     """写入 workcount_log；commit=False 时由外层事务统一提交。"""
     if not data:
         return
-    keys = ['Id', 'CostSyncId', 'CostSyncDetailId', 'CostNo', 'WorkOrderId', 'AppCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
+    keys = ['Id', 'CostNo', 'WorkOrderId', 'AppCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
         'ProName', 'CityName', 'AreaName', 'InstallAddress', 'CustSettleId', 'CustSettleName', 'CustomerId', 'CustomerName',
         'CustStoreId','CustStoreName', 'MainPartId', 'MainPartName', 'ActualCustStoreName', 'GeneralGoodsNames',
         'ArtificialServicePriceName', 'ArtificialServicePrice', 'ServiceSubjectName', 'SubjectClassCode', 'ServiceSubjectCode',
@@ -399,7 +398,7 @@ def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert):
         cursor.execute('DELETE FROM workcount_log')
     insert_to_target(tgt_conn, rows_to_insert, commit=False)
     with tgt_conn.cursor() as cursor:
-        cursor.execute(f'CALL finance_main.proc_InsertCostInfo_ehcf();')
+        cursor.execute('CALL finance_main.proc_InsertCostInfo_ehcf(%s)', (main_id,))
         while cursor.nextset():
             pass
     with tgt_conn.cursor() as cursor:
@@ -416,8 +415,8 @@ def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert):
 
 def sync_cost_sync_queue():
     """
-    扫描 main_costsyncinfo（AuditState=1, CostSyncState=0），按明细 Id + WorkOrderId
-    逐单调用 fetch_detail_data（合并查询，每工单 0～1 条），写入 CostSyncId / CostSyncDetailId 后汇总写入；
+    扫描 main_costsyncinfo（AuditState=1, CostSyncState=0），按明细 WorkOrderId
+    逐单调用 fetch_detail_data（合并查询，每工单 0～1 条），汇总写入；
     每个主单：目标库单事务内 DELETE workcount_log → REPLACE 写入 → CALL 过程 → 更新主单完成。
     注意：本次任务只处理“启动时快照”的主单集合，避免跳过记录造成循环内重复命中。
     每日定时跑一次，下次任务再重新扫描未同步主单。
@@ -438,21 +437,16 @@ def sync_cost_sync_queue():
         pending_main_ids = fetch_pending_cost_sync_main_ids(tgt_conn)
         logger.info(f'[SYNC][COST] Snapshot pending mains: {len(pending_main_ids)}')
         for cost_sync_id in pending_main_ids:
-            details = fetch_cost_sync_details(tgt_conn, cost_sync_id)
+            work_order_ids = fetch_cost_sync_work_order_ids(tgt_conn, cost_sync_id)
             logger.info(
-                f'[SYNC][COST] Main Id={cost_sync_id}, detail lines count={len(details)}'
+                f'[SYNC][COST] Main Id={cost_sync_id}, work orders count={len(work_order_ids)}'
             )
 
             rows_to_insert = []
-            for d in details:
-                woid = d['WorkOrderId']
-                detail_id = d['CostSyncDetailId']
-                for row in fetch_detail_data(src_conn, woid):
-                    row['CostSyncId'] = cost_sync_id
-                    row['CostSyncDetailId'] = detail_id
-                    rows_to_insert.append(row)
+            for woid in work_order_ids:
+                rows_to_insert.extend(fetch_detail_data(src_conn, woid))
 
-            if not rows_to_insert and details:
+            if not rows_to_insert and work_order_ids:
                 logger.warning(
                     f'[SYNC][COST] Main Id={cost_sync_id}: 明细工单在 tb_workorderinfo 无数据，跳过本单（不更新 CostSyncState）'
                 )

@@ -1,9 +1,6 @@
 DROP TABLE IF EXISTS finance_basic.workcount_log;
 CREATE TABLE finance_basic.workcount_log (
   `Id` CHAR(12) PRIMARY KEY COMMENT '成本单Id',
-  `CostSyncId` CHAR(12) DEFAULT NULL COMMENT '成本导入主单Id(finance_main.main_costsyncinfo.Id)',
-  `CostSyncDetailId` CHAR(12) DEFAULT NULL COMMENT '成本导入明细Id(finance_main.main_costsyncdetail.Id)',
-  `CostNo` VARCHAR(100) DEFAULT NULL COMMENT '成本单号',
   `WorkOrderId` varchar(50) COMMENT '工单ID',
   `AppCode` varchar(50) COMMENT '工单申请编码',
   `OrderId` CHAR(12) COMMENT '订单ID',
