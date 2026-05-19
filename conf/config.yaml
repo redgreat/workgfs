@@ -24,3 +24,6 @@ target_db:
 
 batch_size: 10000
 schedule_cron: "0 1 1 * *"
+
+# 调试开关：true 时打印 REPLACE SQL、逐工单拉数明细等；false 时仅保留常规 [SYNC][COST] 日志
+sync_debug: false

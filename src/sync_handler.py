@@ -1,7 +1,14 @@
+import os
 import pymysql
 import yaml
 import time
 from loguru import logger
+
+
+def load_config():
+    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'conf', 'config.yaml')
+    with open(config_path, encoding='utf-8') as f:
+        return yaml.safe_load(f)
 
 
 def get_db_conn(db_config):
@@ -357,10 +364,11 @@ def fetch_detail_data(conn, work_order_id):
     return [dict(zip([col[0] for col in cursor.description], row))]
 
 
-def insert_to_target(conn, data, commit=True):
+def insert_to_target(conn, data, commit=True, debug=False):
     """写入 workcount_log；commit=False 时由外层事务统一提交。"""
     if not data:
-        logger.warning('[SYNC][INSERT] workcount_log 无数据，跳过写入')
+        if debug:
+            logger.warning('[SYNC][INSERT] workcount_log 无数据，跳过写入')
         return
     keys = ['Id', 'CostNo', 'WorkOrderId', 'AppCode', 'ServiceProviderCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
         'ProName', 'CityName', 'AreaName', 'InstallAddress', 'CustSettleId', 'CustSettleName', 'CustomerId', 'CustomerName',
@@ -384,32 +392,39 @@ def insert_to_target(conn, data, commit=True):
                 v = str(v)
             row.append(v)
         values.append(tuple(row))
-    logger.info(f'[SYNC][INSERT] workcount_log 待写入 {len(values)} 行, SQL 模板: {sql}')
     with conn.cursor() as cursor:
-        for idx, row_vals in enumerate(values, 1):
-            try:
-                full = cursor.mogrify(sql, row_vals)
-                stmt = full.decode('utf-8') if isinstance(full, bytes) else full
-            except Exception as ex:
-                stmt = f'{sql} | params={row_vals} | mogrify_error={ex}'
-            logger.info(f'[SYNC][INSERT] ({idx}/{len(values)}) {stmt}')
+        if debug:
+            logger.info(f'[SYNC][INSERT] workcount_log 待写入 {len(values)} 行, SQL 模板: {sql}')
+            for idx, row_vals in enumerate(values, 1):
+                try:
+                    full = cursor.mogrify(sql, row_vals)
+                    stmt = full.decode('utf-8') if isinstance(full, bytes) else full
+                except Exception as ex:
+                    stmt = f'{sql} | params={row_vals} | mogrify_error={ex}'
+                logger.info(f'[SYNC][INSERT] ({idx}/{len(values)}) {stmt}')
         cursor.executemany(sql, values)
-        logger.info(f'[SYNC][INSERT] executemany 完成, rowcount={cursor.rowcount}')
+        if debug:
+            logger.info(f'[SYNC][INSERT] executemany 完成, rowcount={cursor.rowcount}')
     if commit:
         conn.commit()
-        logger.info('[SYNC][INSERT] workcount_log 已 commit')
+        if debug:
+            logger.info('[SYNC][INSERT] workcount_log 已 commit')
 
 
-def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert):
+def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert, debug=False):
     """
     同一事务：清空 workcount_log、写入本批数据、调用存储过程、主单标记已同步，最后提交。
     TRUNCATE 会隐式提交，故用 DELETE。
     调用前须将 tgt_conn 置于 autocommit(False)。
     """
-    logger.info(f'[SYNC][INSERT] 主单 main_costsyncinfo.Id={main_id}, 本批写入前 DELETE workcount_log, 行数={len(rows_to_insert)}')
+    if debug:
+        logger.info(
+            f'[SYNC][INSERT] 主单 main_costsyncinfo.Id={main_id}, '
+            f'本批写入前 DELETE workcount_log, 行数={len(rows_to_insert)}'
+        )
     with tgt_conn.cursor() as cursor:
         cursor.execute('DELETE FROM workcount_log')
-    insert_to_target(tgt_conn, rows_to_insert, commit=False)
+    insert_to_target(tgt_conn, rows_to_insert, commit=False, debug=debug)
     with tgt_conn.cursor() as cursor:
         cursor.execute('CALL finance_main.proc_InsertCostInfo_ehcf(%s)', (main_id,))
         while cursor.nextset():
@@ -434,10 +449,10 @@ def sync_cost_sync_queue():
     注意：本次任务只处理“启动时快照”的主单集合，避免跳过记录造成循环内重复命中。
     每日定时跑一次，下次任务再重新扫描未同步主单。
     """
-    import os
-    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'conf', 'config.yaml')
-    with open(config_path, encoding='utf-8') as f:
-        config = yaml.safe_load(f)
+    config = load_config()
+    debug = bool(config.get('sync_debug', False))
+    if debug:
+        logger.info('[SYNC][COST] sync_debug=true，已开启 INSERT SQL 及逐工单拉数明细日志')
 
     src_conn = get_db_conn(config['source_db'])
     tgt_conn = get_db_conn(config['target_db'])
@@ -458,16 +473,17 @@ def sync_cost_sync_queue():
             rows_to_insert = []
             for woid in work_order_ids:
                 rows = fetch_detail_data(src_conn, woid)
-                if not rows:
-                    logger.warning(
-                        f'[SYNC][COST] Main Id={cost_sync_id}, WorkOrderId={woid}: '
-                        '合并查询无行（tb_workorderinfo 不存在或未命中）'
-                    )
-                else:
-                    logger.info(
-                        f'[SYNC][COST] Main Id={cost_sync_id}, WorkOrderId={woid}: '
-                        f'拉取 1 行, Id={rows[0].get("Id")}, CostNo={rows[0].get("CostNo")}'
-                    )
+                if debug:
+                    if not rows:
+                        logger.warning(
+                            f'[SYNC][COST] Main Id={cost_sync_id}, WorkOrderId={woid}: '
+                            '合并查询无行（tb_workorderinfo 不存在或未命中）'
+                        )
+                    else:
+                        logger.info(
+                            f'[SYNC][COST] Main Id={cost_sync_id}, WorkOrderId={woid}: '
+                            f'拉取 1 行, Id={rows[0].get("Id")}, CostNo={rows[0].get("CostNo")}'
+                        )
                 rows_to_insert.extend(rows)
 
             if not rows_to_insert and work_order_ids:
@@ -478,7 +494,7 @@ def sync_cost_sync_queue():
 
             try:
                 tgt_conn.autocommit(False)
-                _run_one_main_sync_transaction(tgt_conn, cost_sync_id, rows_to_insert)
+                _run_one_main_sync_transaction(tgt_conn, cost_sync_id, rows_to_insert, debug=debug)
                 processed += 1
                 logger.info(
                     f'[SYNC][COST] Main Id={cost_sync_id} completed, rows={len(rows_to_insert)}, CostSyncState=1'
