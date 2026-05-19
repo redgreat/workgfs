@@ -69,6 +69,7 @@ def fetch_detail_data(conn, work_order_id):
             CONCAT(IFNULL(wo.AppCode, ''), '-CT-', RIGHT(wo.Id, 10))
           ) AS CostNo,
           COALESCE(v.AppCode, e.AppCode, f.AppCode, wo.AppCode) AS AppCode,
+          IFNULL(wo.ServiceProviderCode, '1001') AS ServiceProviderCode,
           COALESCE(v.OrderId, e.OrderId, f.OrderId) AS OrderId,
           COALESCE(v.OrderNo, e.OrderNo, f.OrderNo) AS OrderNo,
           COALESCE(v.OrderType, e.OrderType, f.OrderType, 1) AS OrderType,
@@ -360,7 +361,7 @@ def insert_to_target(conn, data, commit=True):
     """写入 workcount_log；commit=False 时由外层事务统一提交。"""
     if not data:
         return
-    keys = ['Id', 'CostNo', 'WorkOrderId', 'AppCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
+    keys = ['Id', 'CostNo', 'WorkOrderId', 'AppCode', 'ServiceProviderCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
         'ProName', 'CityName', 'AreaName', 'InstallAddress', 'CustSettleId', 'CustSettleName', 'CustomerId', 'CustomerName',
         'CustStoreId','CustStoreName', 'MainPartId', 'MainPartName', 'ActualCustStoreName', 'GeneralGoodsNames',
         'ArtificialServicePriceName', 'ArtificialServicePrice', 'ServiceSubjectName', 'SubjectClassCode', 'ServiceSubjectCode',
