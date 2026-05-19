@@ -360,6 +360,7 @@ def fetch_detail_data(conn, work_order_id):
 def insert_to_target(conn, data, commit=True):
     """写入 workcount_log；commit=False 时由外层事务统一提交。"""
     if not data:
+        logger.warning('[SYNC][INSERT] workcount_log 无数据，跳过写入')
         return
     keys = ['Id', 'CostNo', 'WorkOrderId', 'AppCode', 'ServiceProviderCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
         'ProName', 'CityName', 'AreaName', 'InstallAddress', 'CustSettleId', 'CustSettleName', 'CustomerId', 'CustomerName',
@@ -383,10 +384,20 @@ def insert_to_target(conn, data, commit=True):
                 v = str(v)
             row.append(v)
         values.append(tuple(row))
+    logger.info(f'[SYNC][INSERT] workcount_log 待写入 {len(values)} 行, SQL 模板: {sql}')
     with conn.cursor() as cursor:
+        for idx, row_vals in enumerate(values, 1):
+            try:
+                full = cursor.mogrify(sql, row_vals)
+                stmt = full.decode('utf-8') if isinstance(full, bytes) else full
+            except Exception as ex:
+                stmt = f'{sql} | params={row_vals} | mogrify_error={ex}'
+            logger.info(f'[SYNC][INSERT] ({idx}/{len(values)}) {stmt}')
         cursor.executemany(sql, values)
+        logger.info(f'[SYNC][INSERT] executemany 完成, rowcount={cursor.rowcount}')
     if commit:
         conn.commit()
+        logger.info('[SYNC][INSERT] workcount_log 已 commit')
 
 
 def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert):
@@ -395,6 +406,7 @@ def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert):
     TRUNCATE 会隐式提交，故用 DELETE。
     调用前须将 tgt_conn 置于 autocommit(False)。
     """
+    logger.info(f'[SYNC][INSERT] 主单 main_costsyncinfo.Id={main_id}, 本批写入前 DELETE workcount_log, 行数={len(rows_to_insert)}')
     with tgt_conn.cursor() as cursor:
         cursor.execute('DELETE FROM workcount_log')
     insert_to_target(tgt_conn, rows_to_insert, commit=False)
@@ -445,7 +457,18 @@ def sync_cost_sync_queue():
 
             rows_to_insert = []
             for woid in work_order_ids:
-                rows_to_insert.extend(fetch_detail_data(src_conn, woid))
+                rows = fetch_detail_data(src_conn, woid)
+                if not rows:
+                    logger.warning(
+                        f'[SYNC][COST] Main Id={cost_sync_id}, WorkOrderId={woid}: '
+                        '合并查询无行（tb_workorderinfo 不存在或未命中）'
+                    )
+                else:
+                    logger.info(
+                        f'[SYNC][COST] Main Id={cost_sync_id}, WorkOrderId={woid}: '
+                        f'拉取 1 行, Id={rows[0].get("Id")}, CostNo={rows[0].get("CostNo")}'
+                    )
+                rows_to_insert.extend(rows)
 
             if not rows_to_insert and work_order_ids:
                 logger.warning(
