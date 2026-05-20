@@ -60,7 +60,7 @@ def fetch_cost_sync_work_order_ids(conn, cost_sync_id):
         return [r[0] for r in cursor.fetchall()]
 
 
-def fetch_detail_data(conn, work_order_id):
+def fetch_detail_data(conn, work_order_id, cost_sync_id):
     """
     按工单 Id 从壹好车服合并查询（vi_workcount / 调价 / 费用申请），
     以 tb_workorderinfo 为主表，同一工单固定返回 0～1 条。
@@ -69,11 +69,10 @@ def fetch_detail_data(conn, work_order_id):
         SELECT
           COALESCE(v.Id, e.Id, f.Id, wo.Id) AS Id,
           wo.Id AS WorkOrderId,
-          COALESCE(
-            v.CostNo,
-            e.CostNo,
-            f.CostNo,
-            CONCAT(IFNULL(wo.AppCode, ''), '-CT-', RIGHT(wo.Id, 10))
+          CONCAT(
+            IFNULL(wo.AppCode, ''),
+            '-CT-',
+            %s)
           ) AS CostNo,
           COALESCE(v.AppCode, e.AppCode, f.AppCode, wo.AppCode) AS AppCode,
           IFNULL(wo.ServiceProviderCode, '1001') AS ServiceProviderCode,
@@ -355,7 +354,7 @@ def fetch_detail_data(conn, work_order_id):
         WHERE wo.Id = %s
           AND wo.Deleted = 0
     """
-    params = (work_order_id, work_order_id, work_order_id, work_order_id)
+    params = (cost_sync_id, work_order_id, work_order_id, work_order_id, work_order_id)
     with conn.cursor() as cursor:
         cursor.execute(sql, params)
         row = cursor.fetchone()
@@ -472,7 +471,7 @@ def sync_cost_sync_queue():
 
             rows_to_insert = []
             for woid in work_order_ids:
-                rows = fetch_detail_data(src_conn, woid)
+                rows = fetch_detail_data(src_conn, woid, cost_sync_id)
                 if debug:
                     if not rows:
                         logger.warning(
