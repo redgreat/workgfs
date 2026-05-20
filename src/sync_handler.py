@@ -137,7 +137,6 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
           SELECT
             a.Id,
             a.WorkOrderId,
-            CONCAT(a.AppCode, '-CT-', RIGHT(a.WorkOrderId, 10)) AS CostNo,
             a.AppCode,
             (SELECT MallOrderId FROM tb_workgoodsinfo b WHERE b.WorkOrderId = a.WorkOrderId AND b.GoodsType IN (5, 10, 11, 18, 37, 38) AND b.Deleted = 0 LIMIT 1) AS OrderId,
             (SELECT OrderNo FROM tb_workgoodsinfo c WHERE c.WorkOrderId = a.WorkOrderId AND c.GoodsType IN (5, 10, 11, 18, 37, 38) AND c.Deleted = 0 LIMIT 1) AS OrderNo,
@@ -195,7 +194,6 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
           SELECT
             a.Id,
             a.WorkOrderId,
-            CONCAT(a.AppCode, '-CT-', RIGHT(a.WorkOrderId, 10)) AS CostNo,
             a.AppCode,
             (SELECT c.MallOrderId FROM tb_workgoodsinfo c WHERE c.WorkOrderId = a.WorkOrderId AND c.GoodsType IN (5, 10, 11, 18, 37, 38) AND c.Deleted = 0 LIMIT 1) AS OrderId,
             (SELECT d.OrderNo FROM tb_workgoodsinfo d WHERE d.WorkOrderId = a.WorkOrderId AND d.GoodsType IN (5, 10, 11, 18, 37, 38) AND d.Deleted = 0 LIMIT 1) AS OrderNo,
@@ -259,7 +257,6 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
           SELECT
             a.Id,
             a.TargetId AS WorkOrderId,
-            CONCAT(b.AppCode, '-CT-', RIGHT(a.TargetId, 10)) AS CostNo,
             b.AppCode,
             (SELECT MallOrderId FROM tb_workgoodsinfo h WHERE h.WorkOrderId = b.Id AND h.GoodsType IN (5, 10, 11, 18) AND h.Deleted = 0 LIMIT 1) AS OrderId,
             (SELECT OrderNo FROM tb_workgoodsinfo i WHERE i.WorkOrderId = b.Id AND i.GoodsType IN (5, 10, 11, 18, 37, 38) AND i.Deleted = 0 LIMIT 1) AS OrderNo,
