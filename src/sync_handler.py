@@ -72,7 +72,7 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
           CONCAT(
             IFNULL(wo.AppCode, ''),
             '-CT-',
-            %s)
+            %s
           ) AS CostNo,
           COALESCE(v.AppCode, e.AppCode, f.AppCode, wo.AppCode) AS AppCode,
           IFNULL(wo.ServiceProviderCode, '1001') AS ServiceProviderCode,
