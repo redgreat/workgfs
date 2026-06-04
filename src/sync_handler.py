@@ -24,6 +24,165 @@ def get_db_conn(db_config):
     )
 
 
+_mainpart_cache_by_order = {}
+_mainpart_cache_by_customer = {}
+_cached_config = None
+
+
+def _get_config_cached():
+    global _cached_config
+    if _cached_config is None:
+        _cached_config = load_config()
+    return _cached_config
+
+
+def _is_blank(v):
+    if v is None:
+        return True
+    if isinstance(v, str) and v.strip() == '':
+        return True
+    return False
+
+
+def _guess_first_name(s):
+    if _is_blank(s):
+        return None
+    raw = str(s).strip()
+    if not raw:
+        return None
+    for sep in [',', '，', ';', '；', '、', '|', '\n', '\r', '\t', '/', '\\']:
+        if sep in raw:
+            head = raw.split(sep, 1)[0].strip()
+            return head or raw
+    return raw
+
+
+def _fetch_mainpart_by_order(order_id, sale_name, config):
+    if _is_blank(order_id) or _is_blank(sale_name):
+        return None, None
+    cache_key = (str(order_id), str(sale_name))
+    if cache_key in _mainpart_cache_by_order:
+        return _mainpart_cache_by_order[cache_key]
+    if 'mall_db' not in config:
+        _mainpart_cache_by_order[cache_key] = (None, None)
+        return None, None
+    mall_conn = get_db_conn(config['mall_db'])
+    try:
+        with mall_conn.cursor() as cursor:
+            sql = """
+                SELECT c.MainPartId, c.MainPartName
+                FROM tb_orderinfo a
+                JOIN tb_orderitem b
+                  ON b.OrderId = a.Id
+                 AND b.SaleName = %s
+                 AND b.Deleted = 0
+                JOIN tb_orderitemdetail c
+                  ON c.ItemId = b.Id
+                 AND c.Deleted = 0
+                WHERE a.Deleted = 0
+                  AND a.Id = %s
+                LIMIT 1
+            """
+            cursor.execute(sql, (sale_name, order_id))
+            r = cursor.fetchone()
+            if not r:
+                _mainpart_cache_by_order[cache_key] = (None, None)
+                return None, None
+            main_part_id, main_part_name = r[0], r[1]
+            _mainpart_cache_by_order[cache_key] = (main_part_id, main_part_name)
+            return main_part_id, main_part_name
+    except Exception:
+        logger.exception(
+            f'[SYNC][MAINPART] mallcenter 查询主体失败, OrderId={order_id}, SaleName={sale_name}'
+        )
+        _mainpart_cache_by_order[cache_key] = (None, None)
+        return None, None
+    finally:
+        mall_conn.close()
+
+
+def _fetch_mainpart_by_customer(customer_id, config):
+    if _is_blank(customer_id):
+        return None, None
+    cache_key = str(customer_id)
+    if cache_key in _mainpart_cache_by_customer:
+        return _mainpart_cache_by_customer[cache_key]
+    if 'cust_db' not in config:
+        _mainpart_cache_by_customer[cache_key] = (None, None)
+        return None, None
+    cust_conn = get_db_conn(config['cust_db'])
+    try:
+        with cust_conn.cursor() as cursor:
+            sql = """
+                SELECT d.Id AS MainPartId, d.MainPartName
+                FROM tb_composecust a
+                JOIN tb_matemainpartcom b
+                  ON b.ComposeId = a.ComposeId
+                 AND b.Deleted = 0
+                JOIN tb_materialmainpart c
+                  ON c.Id = b.MateMainPartId
+                 AND c.MaterialTypeCode LIKE '03%%'
+                 AND c.Enabled = 1
+                 AND c.Deleted = 0
+                JOIN tb_contractmainpart d
+                  ON d.Id = c.ConMainPartId
+                 AND d.Enabled = 1
+                 AND d.Deleted = 0
+                WHERE a.Deleted = 0
+                  AND a.CustId = %s
+                LIMIT 1
+            """
+            cursor.execute(sql, (customer_id,))
+            r = cursor.fetchone()
+            if not r:
+                _mainpart_cache_by_customer[cache_key] = (None, None)
+                return None, None
+            main_part_id, main_part_name = r[0], r[1]
+            _mainpart_cache_by_customer[cache_key] = (main_part_id, main_part_name)
+            return main_part_id, main_part_name
+    except Exception:
+        logger.exception(f'[SYNC][MAINPART] customercenter 查询主体失败, CustomerId={customer_id}')
+        _mainpart_cache_by_customer[cache_key] = (None, None)
+        return None, None
+    finally:
+        cust_conn.close()
+
+
+def _fill_mainpart_fields(detail_row, config):
+    if not isinstance(detail_row, dict):
+        return detail_row
+    if (not _is_blank(detail_row.get('MainPartId'))) and (not _is_blank(detail_row.get('MainPartName'))):
+        return detail_row
+
+    order_id = detail_row.get('OrderId')
+    candidates = []
+    general_goods = detail_row.get('GeneralGoodsNames')
+    artificial_goods = detail_row.get('ArtificialServicePriceName')
+    for s in [general_goods, artificial_goods]:
+        first = _guess_first_name(s)
+        if first and first not in candidates:
+            candidates.append(first)
+        if not _is_blank(s):
+            raw = str(s).strip()
+            if raw and raw not in candidates:
+                candidates.append(raw)
+
+    if not _is_blank(order_id):
+        for sale_name in candidates:
+            main_part_id, main_part_name = _fetch_mainpart_by_order(order_id, sale_name, config)
+            if not _is_blank(main_part_id) or not _is_blank(main_part_name):
+                detail_row['MainPartId'] = main_part_id
+                detail_row['MainPartName'] = main_part_name
+                return detail_row
+
+    customer_id = detail_row.get('CustomerId')
+    main_part_id, main_part_name = _fetch_mainpart_by_customer(customer_id, config)
+    if not _is_blank(main_part_id) or not _is_blank(main_part_name):
+        detail_row['MainPartId'] = main_part_id
+        detail_row['MainPartName'] = main_part_name
+    return detail_row
+
+
 def fetch_pending_cost_sync_main_ids(conn):
     """
     一次性取出当前待同步主单 Id 列表（任务启动时快照）。
@@ -355,9 +514,12 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
     with conn.cursor() as cursor:
         cursor.execute(sql, params)
         row = cursor.fetchone()
+        desc = cursor.description
     if not row:
         return []
-    return [dict(zip([col[0] for col in cursor.description], row))]
+    detail = dict(zip([col[0] for col in desc], row))
+    _fill_mainpart_fields(detail, _get_config_cached())
+    return [detail]
 
 
 def insert_to_target(conn, data, commit=True, debug=False):
@@ -446,6 +608,10 @@ def sync_cost_sync_queue():
     每日定时跑一次，下次任务再重新扫描未同步主单。
     """
     config = load_config()
+    global _cached_config
+    _cached_config = config
+    _mainpart_cache_by_order.clear()
+    _mainpart_cache_by_customer.clear()
     debug = bool(config.get('sync_debug', False))
     if debug:
         logger.info('[SYNC][COST] sync_debug=true，已开启 INSERT SQL 及逐工单拉数明细日志')

@@ -14,6 +14,14 @@ mall_db:
   database: mallcenter
   charset: utf8
 
+cust_db:
+  host: rm-bp17u530nslrwnk75so.mysql.rds.aliyuncs.com
+  port: 3306
+  user: user_cust
+  password: Lunz2017
+  database: customercenter
+  charset: utf8
+
 target_db:
   host: rm-bp17u530nslrwnk75so.mysql.rds.aliyuncs.com
   port: 3306
