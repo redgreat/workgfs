@@ -255,7 +255,7 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
           COALESCE(v.Id, e.Id, f.Id, wo.Id) AS Id,
           wo.Id AS WorkOrderId,
           CONCAT(
-            IFNULL(wo.AppCode, ''),
+            IFNULL(wo.Id, ''),
             '-CT-',
             %s
           ) AS CostNo,
