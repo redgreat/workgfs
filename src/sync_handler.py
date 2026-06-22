@@ -618,13 +618,19 @@ def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert, debug=Fals
             f'[SYNC][INSERT] 主单 main_costsyncinfo.Id={main_id}, '
             f'本批写入前 DELETE workcount_log, 行数={len(rows_to_insert)}'
         )
+    logger.info(
+        f'[SYNC][COST] Main Id={main_id}: transaction start, rows_to_insert={len(rows_to_insert)}, '
+        f'batch_size={batch_size}'
+    )
     with tgt_conn.cursor() as cursor:
         cursor.execute('DELETE FROM workcount_log')
     insert_to_target(tgt_conn, rows_to_insert, commit=False, debug=debug, batch_size=batch_size)
+    logger.info(f'[SYNC][COST] Main Id={main_id}: workcount_log write finished, calling procedure')
     with tgt_conn.cursor() as cursor:
         cursor.execute('CALL finance_main.proc_InsertCostInfo_ehcf(%s)', (main_id,))
         while cursor.nextset():
             pass
+    logger.info(f'[SYNC][COST] Main Id={main_id}: procedure finished, updating CostSyncState')
     with tgt_conn.cursor() as cursor:
         cursor.execute(
             """
@@ -635,6 +641,7 @@ def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert, debug=Fals
             (main_id,),
         )
     tgt_conn.commit()
+    logger.info(f'[SYNC][COST] Main Id={main_id}: transaction committed')
 
 
 def _fetch_work_order_ids_for_main(config, cost_sync_id):
@@ -728,14 +735,31 @@ def sync_cost_sync_queue():
         _ensure_conn_alive(snapshot_conn, 'target_db')
         pending_main_ids = fetch_pending_cost_sync_main_ids(snapshot_conn)
         logger.info(f'[SYNC][COST] Snapshot pending mains: {len(pending_main_ids)}')
-        for cost_sync_id in pending_main_ids:
+        total_mains = len(pending_main_ids)
+        for main_idx, cost_sync_id in enumerate(pending_main_ids, 1):
+            main_start_time = time.time()
+            logger.info(f'[SYNC][COST] Main progress {main_idx}/{total_mains}, Id={cost_sync_id}: start')
             work_order_ids = _fetch_work_order_ids_for_main(config, cost_sync_id)
             logger.info(
                 f'[SYNC][COST] Main Id={cost_sync_id}, work orders count={len(work_order_ids)}'
             )
 
             rows_to_insert = []
-            for woid in work_order_ids:
+            last_progress_log_at = main_start_time
+            total_work_orders = len(work_order_ids)
+            for work_idx, woid in enumerate(work_order_ids, 1):
+                now = time.time()
+                if (
+                    work_idx == 1
+                    or work_idx == total_work_orders
+                    or work_idx % 500 == 0
+                    or now - last_progress_log_at >= 30
+                ):
+                    logger.info(
+                        f'[SYNC][COST] Main Id={cost_sync_id}: fetching detail progress '
+                        f'{work_idx}/{total_work_orders}, rows_buffered={len(rows_to_insert)}'
+                    )
+                    last_progress_log_at = now
                 _ensure_conn_alive(src_conn, 'source_db')
                 rows = fetch_detail_data(src_conn, woid, cost_sync_id)
                 if debug:
@@ -757,10 +781,15 @@ def sync_cost_sync_queue():
                 )
                 continue
 
+            logger.info(
+                f'[SYNC][COST] Main Id={cost_sync_id}: detail fetch finished, rows_to_insert={len(rows_to_insert)}, '
+                f'elapsed={time.time() - main_start_time:.2f}s'
+            )
             if _sync_one_main_with_retry(config, cost_sync_id, rows_to_insert, debug=debug):
                 processed += 1
                 logger.info(
-                    f'[SYNC][COST] Main Id={cost_sync_id} completed, rows={len(rows_to_insert)}, CostSyncState=1'
+                    f'[SYNC][COST] Main Id={cost_sync_id} completed, rows={len(rows_to_insert)}, '
+                    f'CostSyncState=1, elapsed={time.time() - main_start_time:.2f}s'
                 )
         duration = time.time() - start_time
         logger.info(f'[SYNC][COST] Finished mains processed={processed}, duration={duration:.2f}s')
