@@ -36,6 +36,32 @@ def _get_config_cached():
     return _cached_config
 
 
+def _ensure_conn_alive(conn, conn_name):
+    """在长任务关键节点前探活连接，必要时自动重连。"""
+    try:
+        conn.ping(reconnect=True)
+    except Exception:
+        logger.exception(f'[SYNC][DB] {conn_name} ping/reconnect failed')
+        raise
+
+
+def _close_conn_quietly(conn, conn_name):
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except Exception as ex:
+        logger.warning(f'[SYNC][DB] {conn_name} close failed: {ex}')
+
+
+def _normalize_batch_size(batch_size):
+    try:
+        value = int(batch_size)
+    except (TypeError, ValueError):
+        value = 10000
+    return max(1, value)
+
+
 def _is_blank(v):
     if v is None:
         return True
@@ -522,12 +548,13 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
     return [detail]
 
 
-def insert_to_target(conn, data, commit=True, debug=False):
+def insert_to_target(conn, data, commit=True, debug=False, batch_size=10000):
     """写入 workcount_log；commit=False 时由外层事务统一提交。"""
     if not data:
         if debug:
             logger.warning('[SYNC][INSERT] workcount_log 无数据，跳过写入')
         return
+    batch_size = _normalize_batch_size(batch_size)
     keys = ['Id', 'CostNo', 'WorkOrderId', 'AppCode', 'ServiceProviderCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
         'ProName', 'CityName', 'AreaName', 'InstallAddress', 'CustSettleId', 'CustSettleName', 'CustomerId', 'CustomerName',
         'CustStoreId','CustStoreName', 'MainPartId', 'MainPartName', 'ActualCustStoreName', 'GeneralGoodsNames',
@@ -540,36 +567,47 @@ def insert_to_target(conn, data, commit=True, debug=False):
     placeholders = ','.join(['%s'] * len(keys))
     columns = ','.join(f'`{k}`' for k in keys)
     sql = f"REPLACE INTO workcount_log ({columns}) VALUES ({placeholders})"
-    values = []
     from decimal import Decimal
-    for item in data:
-        row = []
-        for k in keys:
-            v = item.get(k)
-            if isinstance(v, Decimal):
-                v = str(v)
-            row.append(v)
-        values.append(tuple(row))
     with conn.cursor() as cursor:
         if debug:
-            logger.info(f'[SYNC][INSERT] workcount_log 待写入 {len(values)} 行, SQL 模板: {sql}')
-            for idx, row_vals in enumerate(values, 1):
-                try:
-                    full = cursor.mogrify(sql, row_vals)
-                    stmt = full.decode('utf-8') if isinstance(full, bytes) else full
-                except Exception as ex:
-                    stmt = f'{sql} | params={row_vals} | mogrify_error={ex}'
-                logger.info(f'[SYNC][INSERT] ({idx}/{len(values)}) {stmt}')
-        cursor.executemany(sql, values)
+            total_batches = (len(data) + batch_size - 1) // batch_size
+            logger.info(
+                f'[SYNC][INSERT] workcount_log 待写入 {len(data)} 行, batch_size={batch_size}, '
+                f'batches={total_batches}, SQL 模板: {sql}'
+            )
+        total_rowcount = 0
+        for start in range(0, len(data), batch_size):
+            batch = data[start:start + batch_size]
+            values = []
+            for item in batch:
+                row = []
+                for k in keys:
+                    v = item.get(k)
+                    if isinstance(v, Decimal):
+                        v = str(v)
+                    row.append(v)
+                values.append(tuple(row))
+            if debug:
+                batch_no = start // batch_size + 1
+                logger.info(
+                    f'[SYNC][INSERT] batch {batch_no} 开始写入, rows={len(values)}, '
+                    f'range={start + 1}-{start + len(values)}'
+                )
+            cursor.executemany(sql, values)
+            total_rowcount += cursor.rowcount
+            if debug:
+                logger.info(
+                    f'[SYNC][INSERT] batch {start // batch_size + 1} 写入完成, rowcount={cursor.rowcount}'
+                )
         if debug:
-            logger.info(f'[SYNC][INSERT] executemany 完成, rowcount={cursor.rowcount}')
+            logger.info(f'[SYNC][INSERT] executemany 全部完成, total_rowcount={total_rowcount}')
     if commit:
         conn.commit()
         if debug:
             logger.info('[SYNC][INSERT] workcount_log 已 commit')
 
 
-def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert, debug=False):
+def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert, debug=False, batch_size=10000):
     """
     同一事务：清空 workcount_log、写入本批数据、调用存储过程、主单标记已同步，最后提交。
     TRUNCATE 会隐式提交，故用 DELETE。
@@ -582,7 +620,7 @@ def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert, debug=Fals
         )
     with tgt_conn.cursor() as cursor:
         cursor.execute('DELETE FROM workcount_log')
-    insert_to_target(tgt_conn, rows_to_insert, commit=False, debug=debug)
+    insert_to_target(tgt_conn, rows_to_insert, commit=False, debug=debug, batch_size=batch_size)
     with tgt_conn.cursor() as cursor:
         cursor.execute('CALL finance_main.proc_InsertCostInfo_ehcf(%s)', (main_id,))
         while cursor.nextset():
@@ -597,6 +635,69 @@ def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert, debug=Fals
             (main_id,),
         )
     tgt_conn.commit()
+
+
+def _fetch_work_order_ids_for_main(config, cost_sync_id):
+    """每个主单使用短连接查询其已验证通过的工单列表。"""
+    tgt_conn = get_db_conn(config['target_db'])
+    try:
+        tgt_conn.autocommit(True)
+        _ensure_conn_alive(tgt_conn, 'target_db')
+        return fetch_cost_sync_work_order_ids(tgt_conn, cost_sync_id)
+    finally:
+        _close_conn_quietly(tgt_conn, 'target_db')
+
+
+def _sync_one_main_with_retry(config, cost_sync_id, rows_to_insert, debug=False, max_attempts=2):
+    """每个主单事务使用独立目标库连接；失败时自动重试一次。"""
+    last_ex = None
+    batch_size = _normalize_batch_size(config.get('batch_size', 10000))
+    for attempt in range(1, max_attempts + 1):
+        tgt_conn = None
+        try:
+            tgt_conn = get_db_conn(config['target_db'])
+            tgt_conn.autocommit(True)
+            _ensure_conn_alive(tgt_conn, 'target_db')
+            tgt_conn.autocommit(False)
+            _run_one_main_sync_transaction(
+                tgt_conn,
+                cost_sync_id,
+                rows_to_insert,
+                debug=debug,
+                batch_size=batch_size,
+            )
+            return True
+        except Exception as ex:
+            last_ex = ex
+            try:
+                if tgt_conn is not None:
+                    _ensure_conn_alive(tgt_conn, 'target_db')
+                    tgt_conn.rollback()
+            except Exception as rollback_ex:
+                logger.warning(
+                    f'[SYNC][COST] Main Id={cost_sync_id} attempt={attempt} rollback skipped: {rollback_ex}'
+                )
+            logger.exception(
+                f'[SYNC][COST] Main Id={cost_sync_id} attempt={attempt}/{max_attempts} transaction failed: {ex}'
+            )
+            if attempt >= max_attempts:
+                return False
+            logger.warning(
+                f'[SYNC][COST] Main Id={cost_sync_id} retrying transaction, attempt={attempt + 1}/{max_attempts}'
+            )
+        finally:
+            if tgt_conn is not None:
+                try:
+                    _ensure_conn_alive(tgt_conn, 'target_db')
+                    tgt_conn.autocommit(True)
+                except Exception as autocommit_ex:
+                    logger.warning(
+                        f'[SYNC][COST] Main Id={cost_sync_id} reset autocommit failed: {autocommit_ex}'
+                    )
+                _close_conn_quietly(tgt_conn, 'target_db')
+    if last_ex:
+        raise last_ex
+    return False
 
 
 def sync_cost_sync_queue():
@@ -617,23 +718,25 @@ def sync_cost_sync_queue():
         logger.info('[SYNC][COST] sync_debug=true，已开启 INSERT SQL 及逐工单拉数明细日志')
 
     src_conn = get_db_conn(config['source_db'])
-    tgt_conn = get_db_conn(config['target_db'])
-    tgt_conn.autocommit(True)
+    snapshot_conn = get_db_conn(config['target_db'])
+    snapshot_conn.autocommit(True)
 
     start_time = time.time()
     logger.info('[SYNC][COST] Start main_costsyncinfo queue sync')
     try:
         processed = 0
-        pending_main_ids = fetch_pending_cost_sync_main_ids(tgt_conn)
+        _ensure_conn_alive(snapshot_conn, 'target_db')
+        pending_main_ids = fetch_pending_cost_sync_main_ids(snapshot_conn)
         logger.info(f'[SYNC][COST] Snapshot pending mains: {len(pending_main_ids)}')
         for cost_sync_id in pending_main_ids:
-            work_order_ids = fetch_cost_sync_work_order_ids(tgt_conn, cost_sync_id)
+            work_order_ids = _fetch_work_order_ids_for_main(config, cost_sync_id)
             logger.info(
                 f'[SYNC][COST] Main Id={cost_sync_id}, work orders count={len(work_order_ids)}'
             )
 
             rows_to_insert = []
             for woid in work_order_ids:
+                _ensure_conn_alive(src_conn, 'source_db')
                 rows = fetch_detail_data(src_conn, woid, cost_sync_id)
                 if debug:
                     if not rows:
@@ -654,27 +757,18 @@ def sync_cost_sync_queue():
                 )
                 continue
 
-            try:
-                tgt_conn.autocommit(False)
-                _run_one_main_sync_transaction(tgt_conn, cost_sync_id, rows_to_insert, debug=debug)
+            if _sync_one_main_with_retry(config, cost_sync_id, rows_to_insert, debug=debug):
                 processed += 1
                 logger.info(
                     f'[SYNC][COST] Main Id={cost_sync_id} completed, rows={len(rows_to_insert)}, CostSyncState=1'
                 )
-            except Exception as ex:
-                tgt_conn.rollback()
-                logger.exception(
-                    f'[SYNC][COST] Main Id={cost_sync_id} transaction failed: {ex}'
-                )
-            finally:
-                tgt_conn.autocommit(True)
         duration = time.time() - start_time
         logger.info(f'[SYNC][COST] Finished mains processed={processed}, duration={duration:.2f}s')
     except Exception as e:
         logger.exception(f'[SYNC][COST] Queue sync failed: {e}')
     finally:
         src_conn.close()
-        tgt_conn.close()
+        _close_conn_quietly(snapshot_conn, 'target_db')
 
 
 def sync_task():
