@@ -432,8 +432,7 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
             ON b.WorkOrderId = a.WorkOrderId
            AND a.ArtificialServicePriceId = b.ArtificialServicePriceId
            AND b.TagSign = '是'
-          WHERE a.Deleted = 0
-            AND MONTH(a.OperTime) <> MONTH(b.CompleteTime)
+          WHERE MONTH(a.OperTime) <> MONTH(b.CompleteTime)
             AND a.WorkOrderId = %s
           ORDER BY a.OperTime DESC
           LIMIT 1
@@ -528,13 +527,11 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
           LEFT JOIN tb_feeiteminfo l
             ON l.Id = a.FeeItemId
            AND l.Deleted = 0
-          WHERE a.Deleted = 0
-            AND a.TargetId = %s
+          WHERE a.TargetId = %s
           ORDER BY a.LastAuditTime DESC
           LIMIT 1
         ) f ON TRUE
         WHERE wo.Id = %s
-          AND wo.Deleted = 0
     """
     params = (cost_sync_id, work_order_id, work_order_id, work_order_id, work_order_id)
     with conn.cursor() as cursor:
