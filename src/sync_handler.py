@@ -254,9 +254,13 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
         SELECT
           wo.Id AS WorkOrderId,
           CONCAT(
-            IFNULL(wo.Id, ''),
+            IFNULL(COALESCE(v.AppCode, e.AppCode, f.AppCode, wo.AppCode), ''),
             '-CT-',
-            %s
+            %s,
+            CHAR(FLOOR(RAND() * 26) + 65),
+            CHAR(FLOOR(RAND() * 26) + 65),
+            CHAR(FLOOR(RAND() * 26) + 65),
+            CHAR(FLOOR(RAND() * 26) + 65)
           ) AS CostNo,
           COALESCE(v.AppCode, e.AppCode, f.AppCode, wo.AppCode) AS AppCode,
           IFNULL(wo.ServiceProviderCode, '1001') AS ServiceProviderCode,
