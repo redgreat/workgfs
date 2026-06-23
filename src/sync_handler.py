@@ -229,9 +229,9 @@ def fetch_pending_cost_sync_main_ids(conn):
 
 
 def fetch_cost_sync_work_order_ids(conn, cost_sync_id):
-    """主单下已验证通过的明细工单 Id。"""
+    """主单下已验证通过的明细（CostSyncDetailId, WorkOrderId）列表。"""
     sql = """
-        SELECT WorkOrderId
+        SELECT Id, WorkOrderId
         FROM finance_main.main_costsyncdetail
         WHERE Deleted = 0
           AND CostSyncId = %s
@@ -242,16 +242,17 @@ def fetch_cost_sync_work_order_ids(conn, cost_sync_id):
     """
     with conn.cursor() as cursor:
         cursor.execute(sql, (cost_sync_id,))
-        return [r[0] for r in cursor.fetchall()]
+        return [(r[0], r[1]) for r in cursor.fetchall()]
 
 
-def fetch_detail_data(conn, work_order_id, cost_sync_id):
+def fetch_detail_data(conn, work_order_id, cost_sync_id, cost_sync_detail_id):
     """
     按工单 Id 从壹好车服合并查询（vi_workcount / 调价 / 费用申请），
     以 tb_workorderinfo 为主表，同一工单固定返回 0～1 条。
     """
     sql = """
         SELECT
+          %s AS CostSyncDetailId,
           wo.Id AS WorkOrderId,
           CONCAT(
             IFNULL(COALESCE(v.AppCode, e.AppCode, f.AppCode, wo.AppCode), ''),
@@ -536,7 +537,14 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
         ) f ON TRUE
         WHERE wo.Id = %s
     """
-    params = (cost_sync_id, work_order_id, work_order_id, work_order_id, work_order_id)
+    params = (
+        cost_sync_detail_id,
+        cost_sync_id,
+        work_order_id,
+        work_order_id,
+        work_order_id,
+        work_order_id,
+    )
     with conn.cursor() as cursor:
         cursor.execute(sql, params)
         row = cursor.fetchone()
@@ -555,7 +563,7 @@ def insert_to_target(conn, data, commit=True, debug=False, batch_size=10000):
             logger.warning('[SYNC][INSERT] workcount_log 无数据，跳过写入')
         return
     batch_size = _normalize_batch_size(batch_size)
-    keys = ['WorkOrderId', 'CostNo', 'AppCode', 'ServiceProviderCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
+    keys = ['CostSyncDetailId', 'WorkOrderId', 'CostNo', 'AppCode', 'ServiceProviderCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
         'ProName', 'CityName', 'AreaName', 'InstallAddress', 'CustSettleId', 'CustSettleName', 'CustomerId', 'CustomerName',
         'CustStoreId','CustStoreName', 'MainPartId', 'MainPartName', 'ActualCustStoreName', 'GeneralGoodsNames',
         'ArtificialServicePriceName', 'ArtificialServicePrice', 'ServiceSubjectName', 'SubjectClassCode', 'ServiceSubjectCode',
@@ -645,7 +653,7 @@ def _run_one_main_sync_transaction(tgt_conn, main_id, rows_to_insert, debug=Fals
 
 
 def _fetch_work_order_ids_for_main(config, cost_sync_id):
-    """每个主单使用短连接查询其已验证通过的工单列表。"""
+    """每个主单使用短连接查询其已验证通过的明细（CostSyncDetailId, WorkOrderId）列表。"""
     tgt_conn = get_db_conn(config['target_db'])
     try:
         tgt_conn.autocommit(True)
@@ -739,15 +747,15 @@ def sync_cost_sync_queue():
         for main_idx, cost_sync_id in enumerate(pending_main_ids, 1):
             main_start_time = time.time()
             logger.info(f'[SYNC][COST] Main progress {main_idx}/{total_mains}, Id={cost_sync_id}: start')
-            work_order_ids = _fetch_work_order_ids_for_main(config, cost_sync_id)
+            detail_work_orders = _fetch_work_order_ids_for_main(config, cost_sync_id)
             logger.info(
-                f'[SYNC][COST] Main Id={cost_sync_id}, work orders count={len(work_order_ids)}'
+                f'[SYNC][COST] Main Id={cost_sync_id}, work orders count={len(detail_work_orders)}'
             )
 
             rows_to_insert = []
             last_progress_log_at = main_start_time
-            total_work_orders = len(work_order_ids)
-            for work_idx, woid in enumerate(work_order_ids, 1):
+            total_work_orders = len(detail_work_orders)
+            for work_idx, (detail_id, woid) in enumerate(detail_work_orders, 1):
                 now = time.time()
                 if (
                     work_idx == 1
@@ -761,7 +769,7 @@ def sync_cost_sync_queue():
                     )
                     last_progress_log_at = now
                 _ensure_conn_alive(src_conn, 'source_db')
-                rows = fetch_detail_data(src_conn, woid, cost_sync_id)
+                rows = fetch_detail_data(src_conn, woid, cost_sync_id, detail_id)
                 if debug:
                     if not rows:
                         logger.warning(
@@ -771,11 +779,11 @@ def sync_cost_sync_queue():
                     else:
                         logger.info(
                             f'[SYNC][COST] Main Id={cost_sync_id}, WorkOrderId={woid}: '
-                            f'拉取 1 行, Id={rows[0].get("Id")}, CostNo={rows[0].get("CostNo")}'
+                            f'拉取 1 行, CostSyncDetailId={rows[0].get("CostSyncDetailId")}, CostNo={rows[0].get("CostNo")}'
                         )
                 rows_to_insert.extend(rows)
 
-            if not rows_to_insert and work_order_ids:
+            if not rows_to_insert and detail_work_orders:
                 logger.warning(
                     f'[SYNC][COST] Main Id={cost_sync_id}: 明细工单在 tb_workorderinfo 无数据，跳过本单（不更新 CostSyncState）'
                 )
