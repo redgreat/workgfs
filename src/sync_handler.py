@@ -252,7 +252,6 @@ def fetch_detail_data(conn, work_order_id, cost_sync_id):
     """
     sql = """
         SELECT
-          COALESCE(v.Id, e.Id, f.Id, wo.Id) AS Id,
           wo.Id AS WorkOrderId,
           CONCAT(
             IFNULL(wo.Id, ''),
@@ -552,7 +551,7 @@ def insert_to_target(conn, data, commit=True, debug=False, batch_size=10000):
             logger.warning('[SYNC][INSERT] workcount_log 无数据，跳过写入')
         return
     batch_size = _normalize_batch_size(batch_size)
-    keys = ['Id', 'CostNo', 'WorkOrderId', 'AppCode', 'ServiceProviderCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
+    keys = ['WorkOrderId', 'CostNo', 'AppCode', 'ServiceProviderCode', 'OrderId', 'OrderNo', 'OrderType', 'WorkOrderType', 'WorkStatus',
         'ProName', 'CityName', 'AreaName', 'InstallAddress', 'CustSettleId', 'CustSettleName', 'CustomerId', 'CustomerName',
         'CustStoreId','CustStoreName', 'MainPartId', 'MainPartName', 'ActualCustStoreName', 'GeneralGoodsNames',
         'ArtificialServicePriceName', 'ArtificialServicePrice', 'ServiceSubjectName', 'SubjectClassCode', 'ServiceSubjectCode',
